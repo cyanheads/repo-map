@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "repo-map"
+version = "0.1.0"
+authors = [
+    {name = "cyanheads", email = "cyanheads@gmail.com"},
+]
+description = "A tool to generate a structured summary of a software repository, enhanced with AI."
+readme = "README.md"
+requires-python = ">=3.7"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+
+dependencies = [
+    "requests==2.32.3",
+    "tqdm==4.66.5",
+    "aiohttp==3.10.7",
+    "certifi==2024.8.30",
+    "pathspec==0.12.1",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/cyanheads/repo-map"
+
+[project.scripts]
+repo-map = "repo_map:run_main"
