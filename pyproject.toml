@@ -25,7 +25,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "requests==2.32.3",
+    "requests==2.32.4",
     "tqdm==4.66.5",
     "aiohttp==3.10.11",
     "certifi==2024.8.30",
