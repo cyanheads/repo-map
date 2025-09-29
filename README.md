@@ -58,25 +58,33 @@ Here's an example of a repo-map generated for an advanced Snake game implemented
 ```markdown
 / (SSSnakeGame)
 ├── main.py (Python)
-│   ├── Description: Entry point for the Snake game, initializes game and runs the main loop.
-│   ├── Developer Consideration: "Uses pygame for game development, which may require additional setup for cross-platform compatibility."
-│   ├── Imports: [pygame, random, time]
-│   ├── Functions: [main, game_loop, draw_snake, draw_food]
+│   ├── Description: Entry point for the Snake game, initializes the game environment and runs the main event loop.
+│   ├── Developer Consideration: "The game loop is tightly bound to Pygame's event system; any significant changes will require familiarity with Pygame's architecture."
+│   ├── Maintenance Flag: Stable
+│   ├── Architectural Role: Entrypoint
+│   ├── Code Quality Score: 8/10
+│   ├── Refactoring Suggestions: "Isolate game state management from the rendering logic to improve testability and reduce complexity."
+│   └── Security Assessment: "None"
 ├── config.py (Python)
-│   ├── Description: Centralizes game configuration parameters.
-│   ├── Developer Consideration: "Hard-coded values may need adjustment for different screen sizes or game difficulties."
+│   ├── Description: Centralizes all static configuration parameters for the game, such as screen dimensions, colors, and snake speed.
+│   ├── Developer Consideration: "Changing screen dimensions may require adjustments to the food spawning logic to ensure it appears within bounds."
+│   ├── Maintenance Flag: Volatile
+│   ├── Architectural Role: Configuration
+│   ├── Code Quality Score: 9/10
+│   ├── Refactoring Suggestions: "Consider using a more structured configuration format like YAML or JSON for easier management, especially if settings become more complex."
+│   └── Security Assessment: "None"
 ├── assets/
 │   ├── images/
 │   │   ├── snake_head.png (Image)
-│   │   ├── food.png (Image)
-│   ├── sounds/
-│   │   ├── eat.wav (Audio)
-│   │   ├── game_over.mp3 (Audio)
+│   │   └── food.png (Image)
+│   └── sounds/
+│       ├── eat.wav (Audio)
+│       └── game_over.mp3 (Audio)
 ├── requirements.txt (Text)
-│   ├── Description: Lists all Python package dependencies for the project.
-├── README.md (Markdown)
-│   ├── Description: Provides project overview, setup instructions, and gameplay details.
-└──────────────
+│   └── Description: Lists all Python package dependencies required to run the project, such as `pygame`.
+└── README.md (Markdown)
+    └── Description: Provides a comprehensive overview of the project, including setup instructions, gameplay details, and contribution guidelines.
+└──────────────               
 ```
 
 This example demonstrates how repo-map provides a comprehensive overview of a Snake game project, including file descriptions, developer considerations, and key structural information.
@@ -126,7 +134,7 @@ Contributions, issues, and feature requests are welcome! Feel free to check the 
 If you encounter any problems or have any questions, please open an issue in the [GitHub repository](https://github.com/cyanheads/repo-map/issues).
 
 ## 📦 Version
-Current version: 0.3.0
+Current version: 0.4.0
 
 ## ⚠️ Disclaimer
 By using this tool, you acknowledge that files will be sent to the OpenRouter LLM for processing. Ensure you have the necessary permissions and consider any sensitive information in your repository.

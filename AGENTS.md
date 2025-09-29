@@ -32,16 +32,16 @@
 
 ## Execution Flow
 1. `run_main()` launches the async entrypoint (`src/repo_map/main.py`).
-2. `summarize_repo()` walks the tree, respects all `.gitignore` files, records directories, and gathers import/function metadata for supported extensions (`src/repo_map/file_scanner.py`).
-3. Cached hashes short-circuit unchanged files; fresh files have structure extracted via `code_parser.py` helpers and baseline docstrings/imports captured.
-4. `enhance_repo_with_llm()` selects files with structural info, queues them, and streams prompts through `llm_service.get_llm_descriptions()`.
-5. Responses update in-memory structures + cache, `print_tree()` logs an ASCII map, and `save_tree_map()` writes `<repo>_repo_map.md` to disk.
+2. `summarize_repo()` walks the tree, merges the repo root `.gitignore` with built-in defaults, records directories, and captures docstrings, imports, classes, functions, and constants for supported extensions (`src/repo_map/file_scanner.py`).
+3. Cached hashes short-circuit unchanged files; fresh files have structure extracted via `code_parser.py` helpers before LLM enhancement.
+4. `_enhance_summary_with_llm()` selects files with structural info, queues them, and streams prompts through `llm_service.get_llm_descriptions()` to populate descriptions, developer considerations, maintenance flags, and key dependencies.
+5. Responses update in-memory structures + cache, `_print_tree()` logs an ASCII map, and `_save_markdown_map()` writes `<repo>_repo_map.md` to disk.
 
 ## Key Modules
 - `src/repo_map/main.py` – CLI orchestration, disclaimer handling, persistence of results.
-- `src/repo_map/file_scanner.py` – repository walker, `.gitignore` aggregation, hash computation, and cache hydration.
+- `src/repo_map/file_scanner.py` – repository walker, root `.gitignore` + default ignore aggregation, hash computation, and cache hydration.
 - `src/repo_map/code_parser.py` – language-aware extraction for Python/Java/JS/TS/C# plus import and docstring helpers.
-- `src/repo_map/llm_service.py` – OpenRouter client, concurrency semaphore, exponential backoff, response parsing.
+- `src/repo_map/llm_service.py` – OpenRouter client, concurrency semaphore, exponential backoff, response parsing, and generation of descriptions, developer considerations, maintenance flags, and key dependencies.
 - `src/repo_map/cache_manager.py` – SQLite lifecycle and schema migrations.
 - `src/repo_map/config.py` – Pydantic settings bound to env / `.env`; instantiates a singleton `settings` object.
 - `src/repo_map/models.py` – extension-to-language lookup used by the scanner.
@@ -49,6 +49,7 @@
 ## Working With the Cache
 - Located inside the target repo (`.repo-map-cache.db`) so analyses travel with the project.
 - Schema upgrades run automatically on load; delete the file to force a clean regeneration.
+- Descriptions, developer considerations, maintenance flags, key dependencies, imports, and functions are cached alongside hashes for reuse.
 - `hash` column stores SHA-256 of each processed file; updating source without deleting cache still reprocesses because hashes change.
 
 ## Developer Workflows

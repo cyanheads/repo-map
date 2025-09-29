@@ -1,8 +1,8 @@
 """
 Main script for the repo-map tool.
 
-This script provides a CLI for generating a structured summary of a software
-repository, enhanced with AI-generated descriptions.
+Provides a CLI for generating a structured summary of a software repository and
+enhancing it with AI-generated documentation hints.
 """
 
 import argparse
@@ -22,25 +22,23 @@ from repo_map.config import settings
 from repo_map.file_scanner import summarize_repo
 from repo_map.llm_service import get_llm_descriptions, update_api_semaphore_limit
 
-# --- Tqdm-Friendly Logging ---
-
 logger = logging.getLogger(__name__)
 
 
 class TqdmLoggingHandler(logging.Handler):
-    """Redirects logging output through tqdm.write."""
+    """Redirect logging records through tqdm to avoid breaking progress bars."""
 
-    def emit(self, record: logging.LogRecord):
+    def emit(self, record: logging.LogRecord) -> None:
         try:
-            msg = self.format(record)
-            tqdm.write(msg)
+            message = self.format(record)
+            tqdm.write(message)
             self.flush()
         except (OSError, ValueError, TypeError):
             self.handleError(record)
 
 
-def setup_logging(level=logging.INFO):
-    """Configures logging for the application."""
+def setup_logging(level: int = logging.INFO) -> None:
+    """Configure root logging with tqdm compatibility."""
     root_logger = logging.getLogger()
     if root_logger.hasHandlers():
         root_logger.handlers.clear()
@@ -52,18 +50,15 @@ def setup_logging(level=logging.INFO):
     )
 
 
-# --- Core Application Logic ---
-
-
 class RepoMapApp:
-    """Encapsulates the logic for the repo-map CLI application."""
+    """Encapsulates the CLI application lifecycle."""
 
     def __init__(self) -> None:
         self.args: Optional[argparse.Namespace] = None
         self.cache_conn: Optional[sqlite3.Connection] = None
 
-    async def run(self):
-        """Main execution flow for the application."""
+    async def run(self) -> None:
+        """Execute the CLI flow."""
         setup_logging()
         self.args = self._parse_args()
 
@@ -94,9 +89,10 @@ class RepoMapApp:
             if self.cache_conn:
                 self.cache_conn.close()
 
-    async def _process_repository(self):
-        """Orchestrates scanning, enhancing, and saving the repository map."""
+    async def _process_repository(self) -> None:
+        """Orchestrate scanning, LLM enhancement, and persistence."""
         assert self.args is not None
+        assert self.cache_conn is not None
         logger.info("Generating repository summary...")
         summary = summarize_repo(self.args.repository_path, self.cache_conn)
 
@@ -123,29 +119,27 @@ class RepoMapApp:
     async def _enhance_summary_with_llm(
         self, structure: list[dict[str, Any]], model_name: str
     ) -> None:
-        """Enhances the repository structure with descriptions using LLM."""
+        """Enhance file entries with LLM-produced metadata."""
         files_to_process = self._get_files_to_process(structure)
 
         tasks = [
-            (index, file)
-            for index, file in enumerate(structure)
-            if file["path"] in files_to_process
+            file for file in structure if file["path"] in files_to_process
         ]
 
         if not tasks:
             logger.info("No new or modified files to enhance. All up to date.")
             return
 
-        for index, file in tqdm(tasks, desc="Enhancing files", ncols=100):
+        for file in tqdm(tasks, desc="Enhancing files", ncols=100):
             tqdm.write(f"Processing: {file['name']}")
-            await get_llm_descriptions(structure, index, file, model=model_name)
+            await get_llm_descriptions(structure, file, model=model_name)
             self._update_cache_for_file(file)
 
     def _get_files_to_process(self, structure: list[dict[str, Any]]) -> set[str]:
-        """Determines which files need LLM enhancement based on cache status."""
+        """Determine which files need LLM enhancement based on cache state."""
         assert self.cache_conn is not None
         cursor = self.cache_conn.cursor()
-        files_to_process = set()
+        files_to_process: set[str] = set()
         for item in structure:
             if item["type"] == "file" and (item.get("imports") or item.get("functions")):
                 cursor.execute("SELECT hash FROM cache WHERE path = ?", (item["path"],))
@@ -154,14 +148,27 @@ class RepoMapApp:
                     files_to_process.add(item["path"])
         return files_to_process
 
-    def _update_cache_for_file(self, file_data: dict[str, Any]):
-        """Updates the cache with the new data for a single file."""
+    def _update_cache_for_file(self, file_data: dict[str, Any]) -> None:
+        """Persist the latest LLM metadata for a file in the cache."""
         assert self.cache_conn is not None
         cursor = self.cache_conn.cursor()
         cursor.execute(
             """
-            INSERT OR REPLACE INTO cache (path, hash, description, developer_consideration, imports, functions)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO cache (
+                path,
+                hash,
+                description,
+                developer_consideration,
+                imports,
+                functions,
+                maintenance_flag,
+                critical_dependencies,
+                architectural_role,
+                code_quality_score,
+                refactoring_suggestions,
+                security_assessment
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 file_data["path"],
@@ -170,6 +177,12 @@ class RepoMapApp:
                 file_data.get("developer_consideration", ""),
                 json.dumps(file_data.get("imports", [])),
                 json.dumps(file_data.get("functions", [])),
+                file_data.get("maintenance_flag", "Unknown"),
+                file_data.get("critical_dependencies", "{}"),
+                file_data.get("architectural_role", "Unknown"),
+                file_data.get("code_quality_score", 0),
+                file_data.get("refactoring_suggestions", "None"),
+                file_data.get("security_assessment", "None"),
             ),
         )
         self.cache_conn.commit()
@@ -177,33 +190,25 @@ class RepoMapApp:
     def _format_tree_lines(
         self, structure: list[dict[str, Any]]
     ) -> Generator[str, None, None]:
-        """Yields formatted lines for the repository tree."""
+        """Yield lines that represent the repository tree with metadata."""
         for i, item in enumerate(structure):
             prefix = ""
             for level in range(item["level"]):
-                # Check if the parent at this level is the last one
                 is_parent_last = True
-                # Find the parent of the current item at `level`
-                parent_of_item_at_level_idx = -1
+                parent_index = -1
                 for k in range(i - 1, -1, -1):
-                    if structure[k]["level"] == level -1:
-                        parent_of_item_at_level_idx = k
+                    if structure[k]["level"] == level - 1:
+                        parent_index = k
                         break
-
-                # Check if this parent is the last among its siblings
-                if parent_of_item_at_level_idx != -1:
-                    is_parent_last = True # Assume last
-                    for j in range(parent_of_item_at_level_idx + 1, len(structure)):
-                        if structure[j]["level"] == level -1:
+                if parent_index != -1:
+                    is_parent_last = True
+                    for j in range(parent_index + 1, len(structure)):
+                        if structure[j]["level"] == level - 1:
                             is_parent_last = False
                             break
-                        if structure[j]["level"] < level -1:
+                        if structure[j]["level"] < level - 1:
                             break
-                if is_parent_last:
-                    prefix += "    "
-                else:
-                    prefix += "│   "
-
+                prefix += "    " if is_parent_last else "│   "
 
             is_last = True
             for j in range(i + 1, len(structure)):
@@ -216,24 +221,57 @@ class RepoMapApp:
             connector = "└── " if is_last else "├── "
             if item["type"] == "directory":
                 yield f"{prefix}{connector}{item['name']}/"
-            else:
-                language = item.get("language", "None")
-                yield f"{prefix}{connector}{item['name']} ({language})"
+                continue
 
-                details_prefix = prefix + ("    " if is_last else "│   ")
-                details = []
-                if item.get("description"):
-                    details.append(f"Description: {item['description']}")
-                if item.get("developer_consideration"):
-                    details.append(
-                        f'Developer Consideration: "{item["developer_consideration"]}"'
-                    )
-                for k, detail in enumerate(details):
-                    detail_connector = "└── " if k == len(details) - 1 else "├── "
-                    yield f"{details_prefix}{detail_connector}{detail}"
+            language = item.get("language", "None")
+            yield f"{prefix}{connector}{item['name']} ({language})"
 
-    def _print_tree(self, structure: list[dict[str, Any]]):
-        """Prints the repository structure to the console."""
+            details_prefix = prefix + ("    " if is_last else "│   ")
+            detail_lines: list[str] = []
+            if item.get("description"):
+                detail_lines.append(f"Description: {item['description']}")
+            if item.get("developer_consideration"):
+                detail_lines.append(
+                    f'Developer Consideration: "{item["developer_consideration"]}"'
+                )
+
+            maintenance_flag = item.get("maintenance_flag")
+            if maintenance_flag and maintenance_flag != "Unknown":
+                detail_lines.append(f"Maintenance Flag: {maintenance_flag}")
+
+            architectural_role = item.get("architectural_role")
+            if architectural_role and architectural_role != "Unknown":
+                detail_lines.append(f"Architectural Role: {architectural_role}")
+
+            code_quality_score = item.get("code_quality_score")
+            if code_quality_score and code_quality_score > 0:
+                detail_lines.append(f"Code Quality Score: {code_quality_score}/10")
+
+            refactoring_suggestions = item.get("refactoring_suggestions")
+            if refactoring_suggestions and refactoring_suggestions != "None":
+                detail_lines.append(f"Refactoring Suggestions: {refactoring_suggestions}")
+
+            security_assessment = item.get("security_assessment")
+            if security_assessment and security_assessment != "None":
+                detail_lines.append(f"Security Assessment: {security_assessment}")
+
+            try:
+                deps_str = item.get("critical_dependencies", "{}")
+                deps = json.loads(deps_str)
+                if deps:
+                    detail_lines.append("Critical Dependencies:")
+                    for dep, reason in deps.items():
+                        detail_lines.append(f"  - {dep}: {reason}")
+            except json.JSONDecodeError:
+                detail_lines.append("Critical Dependencies: (invalid JSON)")
+
+
+            for idx, detail in enumerate(detail_lines):
+                detail_connector = "└── " if idx == len(detail_lines) - 1 else "├── "
+                yield f"{details_prefix}{detail_connector}{detail}"
+
+    def _print_tree(self, structure: list[dict[str, Any]]) -> None:
+        """Log the repository tree to the console."""
         logger.info("/ (Root Directory)")
         for line in self._format_tree_lines(structure):
             logger.info(line)
@@ -241,32 +279,32 @@ class RepoMapApp:
 
     def _save_markdown_map(
         self, structure: list[dict[str, Any]], repo_root: str, output_path: str
-    ):
-        """Saves the repository map to a Markdown file."""
+    ) -> None:
+        """Persist the repository map to a Markdown file."""
         repo_name = os.path.basename(os.path.normpath(repo_root))
         try:
-            with open(output_path, "w", encoding="utf-8") as f:
-                f.write("# Repository Map\n\n")
-                f.write("```markdown\n")
-                f.write(f"/ ({repo_name})\n")
+            with open(output_path, "w", encoding="utf-8") as handle:
+                handle.write("# Repository Map\n\n")
+                handle.write("```markdown\n")
+                handle.write(f"/ ({repo_name})\n")
                 for line in self._format_tree_lines(structure):
-                    f.write(f"{line}\n")
-                f.write("└────────────── \n")
-                f.write("```\n")
-        except OSError as e:
-            logger.error("Error saving repository map: %s", e)
+                    handle.write(f"{line}\n")
+                handle.write("└────────────── \n")
+                handle.write("```\n")
+        except OSError as exc:
+            logger.error("Error saving repository map: %s", exc)
 
-    def _save_json_map(self, structure: list[dict[str, Any]], output_path: str):
-        """Saves the structure to a JSON file."""
+    def _save_json_map(self, structure: list[dict[str, Any]], output_path: str) -> None:
+        """Persist the raw structure to JSON."""
         try:
-            with open(output_path, "w", encoding="utf-8") as f:
-                json.dump(structure, f, indent=4)
+            with open(output_path, "w", encoding="utf-8") as handle:
+                json.dump(structure, handle, indent=4)
             logger.info("Pre-enhancement structure saved to '%s'.", output_path)
-        except OSError as e:
-            logger.error("Error saving JSON structure map: %s", e)
+        except OSError as exc:
+            logger.error("Error saving JSON structure map: %s", exc)
 
     def _confirm_disclaimer(self) -> bool:
-        """Prompts the user to acknowledge the disclaimer."""
+        """Prompt the user to acknowledge the LLM disclaimer."""
         disclaimer_message = (
             "repo-map: Generates a summary of a repository, enhanced with AI.\n"
             "This tool uses .gitignore to exclude files.\n"
@@ -286,18 +324,19 @@ class RepoMapApp:
                 return False
 
     def _get_output_path(self) -> str:
-        """Determines the full path for the output Markdown file."""
-        assert (
-            self.args is not None
-        ), "Arguments must be parsed before calling _get_output_path"
+        """Resolve the output path for the Markdown report."""
+        assert self.args is not None
         directory_name = os.path.basename(os.path.normpath(self.args.repository_path))
         output_file_name = f"{directory_name}_repo_map.md"
         return os.path.join(self.args.repository_path, output_file_name)
 
     def _parse_args(self) -> argparse.Namespace:
-        """Parses command-line arguments."""
+        """Parse CLI arguments."""
         parser = argparse.ArgumentParser(
-            description="repo-map: Generates a structured summary of a software repository, enhanced with AI.",
+            description=(
+                "repo-map: Generates a structured summary of a software repository, "
+                "enhanced with AI."
+            ),
             formatter_class=argparse.RawTextHelpFormatter,
         )
         parser.add_argument(
@@ -325,9 +364,9 @@ class RepoMapApp:
 
 
 def run_main() -> None:
-    """Runs the main async function and handles top-level exceptions."""
+    """Run the application and capture top-level exceptions."""
     try:
-        app: RepoMapApp = RepoMapApp()
+        app = RepoMapApp()
         asyncio.run(app.run())
     except KeyboardInterrupt:
         logger.warning("\nProcess interrupted by user. Exiting.")
