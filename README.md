@@ -12,7 +12,7 @@ repo-map is an advanced tool for generating comprehensive, AI-enhanced summaries
 - 💾 Caching mechanism using SQLite for efficient processing of unchanged files
 - 🌳 Tree-like visualization of the repository structure
 - 📝 Markdown output for easy sharing and documentation
-- 🔒 Respects .gitignore files (including nested ones) within the target directory for file exclusion
+- 🔒 Respects the root `.gitignore` file and includes a robust set of default ignore patterns
 - 🚦 Implements rate limiting and exponential backoff for LLM API calls
 - ⚡ Asynchronous processing for improved performance
 
@@ -36,7 +36,7 @@ Replace `<repository_path>` with the path to the repository you want to analyze.
 
 ### Options:
 - `-y,` `--yes`: Automatically accept the disclaimer and proceed without prompting.
-- `--model MODEL`: Specify the OpenRouter LLM model to use (default: `google/gemini-flash-1.5`).
+- `--model MODEL`: Specify the OpenRouter LLM model to use (default: `google/gemini-2.5-flash-preview-09-2025`).
 - `--concurrency INT`: Set the number of concurrent API calls (default: 3).
 
 Examples:
@@ -102,7 +102,7 @@ Replace `your_api_key_here` with your actual OpenRouter API key.
 6. 💾 Saves the output as a Markdown file for easy viewing and sharing
 
 ## 🔑 Key Components
-- `main.py`: The main entry point for the CLI application.
+- `main.py`: Encapsulates the core CLI application logic within the `RepoMapApp` class and serves as the main entry point.
 - `file_scanner.py`: Handles scanning the repository, parsing `.gitignore`, and summarizing files.
 - `code_parser.py`: Extracts structures like classes, functions, and imports from code files.
 - `llm_service.py`: Manages interaction with the LLM for generating descriptions.
@@ -126,7 +126,7 @@ Contributions, issues, and feature requests are welcome! Feel free to check the 
 If you encounter any problems or have any questions, please open an issue in the [GitHub repository](https://github.com/cyanheads/repo-map/issues).
 
 ## 📦 Version
-Current version: 0.2.0
+Current version: 0.3.0
 
 ## ⚠️ Disclaimer
 By using this tool, you acknowledge that files will be sent to the OpenRouter LLM for processing. Ensure you have the necessary permissions and consider any sensitive information in your repository.
