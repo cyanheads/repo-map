@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "repo-map"
-version = "0.2.0"
+version = "0.4.0"
 description = "Generate a comprehensive summary and visualization of a repository structure, enhanced with AI-powered descriptions and developer considerations."
 authors = ["Cyanheads <casey@caseyjhand.com>"]
 readme = "README.md"
@@ -28,7 +28,7 @@ types-tqdm = "^4.67.0.20250809"
 
 [tool.poetry.scripts]
 repo-map = "repo_map.main:run_main"
-format = "black src"
+format = "scripts:run_format"
 
 [build-system]
 requires = ["poetry-core"]
