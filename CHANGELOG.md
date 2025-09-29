@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2025-09-29
+
+### Changed
+- Refactored `main.py` by extracting logic into `cli_handler.py`, `logging_utils.py`, and `report_generator.py` for improved modularity.
+- Updated `README.md` with improved formatting, badges, and clearer instructions.
+- Bumped project version to `0.5.0`.
+
+### Added
+- `examples/example.md` to showcase a sample of the generated output.
+
 ## [0.4.0] - 2025-09-29
 
 ### Added

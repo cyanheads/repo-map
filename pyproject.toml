@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "repo-map"
-version = "0.4.0"
+version = "0.5.0"
 description = "Generate a comprehensive summary and visualization of a repository structure, enhanced with AI-powered descriptions and developer considerations."
 authors = ["Cyanheads <casey@caseyjhand.com>"]
 readme = "README.md"
