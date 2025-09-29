@@ -134,6 +134,6 @@ Replace `your_api_key_here` with your actual OpenRouter API key.
 
 Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](https://github.com/cyanheads/repo-map/issues).
 
-## 🛡️ License
+## ️ License
 
 This project is licensed under the Apache 2.0 License. See the `LICENSE` file in the root directory of this project for the full license text.
