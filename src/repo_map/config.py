@@ -1,6 +1,5 @@
 """Configuration settings for the repo-map application."""
 
-from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,7 +20,7 @@ class Settings(BaseSettings):
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
 
-    openrouter_api_key: str = "dummy"  # Default for static analysis
+    openrouter_api_key: str | None = None
     openrouter_model_name: str = "google/gemini-2.5-flash-preview-09-2025"
     openrouter_api_url: str = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -32,14 +31,9 @@ class Settings(BaseSettings):
     # Concurrency limit for API calls
     api_semaphore_limit: int = 3
 
-    @model_validator(mode="after")
-    def check_api_key(self) -> "Settings":
-        """Checks that the API key is not the dummy value."""
-        if self.openrouter_api_key == "dummy":
-            raise ValueError(
-                "OPENROUTER_API_KEY must be set in the environment or .env file."
-            )
-        return self
+    def has_api_key(self) -> bool:
+        """Returns True when an OpenRouter API key is available."""
+        return bool(self.openrouter_api_key)
 
 
 # Create a single instance to be imported by other modules

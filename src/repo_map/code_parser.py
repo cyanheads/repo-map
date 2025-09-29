@@ -45,8 +45,8 @@ def get_java_structure(
     functions = []
     constants = []
     class_pattern = re.compile(r"class\s+(\w+)")
-    method_pattern = re.compile(r"(public|protected|private)\s+\w+\s+(\w+)\s*\(")
-    constant_pattern = re.compile(r"public\s+static\s+final\s+\w+\s+(\w+)\s*=")
+    method_pattern = re.compile(r'(public|protected|private)\s+\w+\s+(\w+)\s*\(')
+    constant_pattern = re.compile(r'public\s+static\s+final\s+\w+\s+(\w+)\s*=')
 
     current_class = None
     try:
@@ -79,9 +79,9 @@ def get_javascript_structure(
     functions = []
     constants = []
     class_pattern = re.compile(r"class\s+(\w+)")
-    method_pattern = re.compile(r"(\w+)\s*\(")
-    function_pattern = re.compile(r"function\s+(\w+)\s*\(")
-    constant_pattern = re.compile(r"const\s+(\w+)\s*=")
+    method_pattern = re.compile(r'(\w+)\s*\(')
+    function_pattern = re.compile(r'function\s+(\w+)\s*\(')
+    constant_pattern = re.compile(r'const\s+(\w+)\s*=')
 
     current_class = None
     try:
@@ -116,8 +116,8 @@ def get_csharp_structure(
     functions = []
     constants = []
     class_pattern = re.compile(r"class\s+(\w+)")
-    method_pattern = re.compile(r"(public|protected|private)\s+\w+\s+(\w+)\s*\(")
-    constant_pattern = re.compile(r"public\s+const\s+\w+\s+(\w+)\s*=")
+    method_pattern = re.compile(r'(public|protected|private)\s+\w+\s+(\w+)\s*\(')
+    constant_pattern = re.compile(r'public\s+const\s+\w+\s+(\w+)\s*=')
 
     current_class = None
     try:

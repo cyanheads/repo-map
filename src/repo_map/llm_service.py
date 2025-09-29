@@ -13,8 +13,41 @@ from repo_map.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Add a semaphore to control the rate of API calls
-api_semaphore = asyncio.Semaphore(settings.api_semaphore_limit)
+
+class APIRateLimiter:
+    """Manages the rate of API calls using a semaphore."""
+
+    def __init__(self, limit: int) -> None:
+        if limit < 1:
+            raise ValueError("Concurrency limit must be greater than zero")
+        self._semaphore = asyncio.Semaphore(limit)
+
+    def update_limit(self, limit: int) -> None:
+        """Updates the concurrency limit by creating a new semaphore."""
+        if limit < 1:
+            raise ValueError("Concurrency limit must be greater than zero")
+        self._semaphore = asyncio.Semaphore(limit)
+
+    async def __aenter__(self) -> None:
+        """Acquire the semaphore."""
+        await self._semaphore.acquire()
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Release the semaphore."""
+        self._semaphore.release()
+
+
+# Global instance of the rate limiter
+rate_limiter = APIRateLimiter(settings.api_semaphore_limit)
+
+
+def update_api_semaphore_limit(limit: int) -> None:
+    """Updates the concurrency limit used for OpenRouter requests."""
+    if limit < 1:
+        raise ValueError("concurrency must be greater than zero")
+
+    settings.api_semaphore_limit = limit
+    rate_limiter.update_limit(limit)
 
 
 async def get_llm_descriptions(
@@ -36,25 +69,40 @@ async def get_llm_descriptions(
         model (str): The LLM model name to use for generating descriptions.
         max_retries (int): Maximum number of retries for API calls.
     """
-    messages = [
-        {
-            "role": "system",
-            "content": """You are an expert software documentation assistant specializing in generating precise, informative descriptions for code structures. Your task is to create concise yet comprehensive descriptions for files in various programming languages.
+    system_prompt = """
+You are a principal software engineer documenting a codebase for other senior engineers. Your goal is to provide clear, concise, and insightful documentation.
 
-Key guidelines:
-NOTE: This is designed to be an informative guide for a software engineer developer to better understand the codebase.
+**Primary Objectives:**
+1.  **File Description:** A 5-15 word summary of the file's primary responsibility and role.
+2.  **Developer Consideration:** A single, critical insight a developer needs to work with this file effectively.
 
-1. Provide a description between 5-15 words for each file.
-2. Capture the core functionality, purpose, or key features of each file.
-3. Use clear, technical language appropriate for experienced developers.
-4. Highlight unique aspects or important roles of each file within the larger system.
-6. Provide a single 'Developer Consideration' that highlights an unconventional, unusual, or potentially confusing aspect of the file. This consideration should focus on the file as a whole and not individual functions or classes, but it can encompass multiple aspects of the file's design or implementation. The goal is to help developers understand and work effectively with the file. If you identify any potential pitfalls, complexities, or challenges in the file, please mention them here. If you identify a crtitical issue or error in the file, please describe it here.
-""",
-        }
-    ]
+**Guidelines for File Description:**
+-   **Be Specific & Technical:** Instead of "handles logic," say "implements user authentication and session management."
+-   **Focus on the 'What', not the 'How':** Describe its purpose, not its implementation details.
+-   **Use Active Voice:** "Manages database connections" is better than "Database connections are managed."
+
+**Guidelines for Developer Consideration:**
+-   **Focus on Actionable Insights:** What should a developer *watch out for*, *be aware of*, or *leverage*?
+-   **Highlight Non-Obvious Aspects:** Point out subtle complexities, performance bottlenecks, non-standard patterns, or critical dependencies.
+-   **Be Concrete:** Instead of "has complex logic," say "Uses a recursive algorithm for tree traversal which can be stack-intensive."
+-   **Potential Topics:**
+    -   **Critical Dependencies:** "Tightly coupled with the `billing-service` API; changes here will likely require downstream updates."
+    -   **Non-Standard Patterns:** "Implements a custom event bus instead of the standard library's observer pattern."
+    -   **Performance/Security:** "Contains raw SQL queries; sanitize all inputs carefully to prevent injection attacks."
+    -   **Hidden State/Side-Effects:** "Modifies a global configuration object, leading to potential side effects in other modules."
+    -   **Critical Errors:** "Contains a potential race condition in the `update_cache` function."
+
+**Output Format:**
+You *MUST* follow this format exactly. Do not add any extra commentary.
+
+Description: [Your concise, 5-15 word description here]
+Developer Consideration: "[Your single, critical insight here]"
+"""
+    messages = [{"role": "system", "content": system_prompt.strip()}]
 
     # Construct prompt for the current file
-    prompt = "Here is the current repository map:\n\n"
+    prompt = "**System Context: Repository Map**\n"
+    prompt += "I am providing the structural map of the repository so far. Use this for context.\n\n"
     partial_map = structure[: file_index + 1]
 
     for itm in partial_map:
@@ -69,33 +117,20 @@ NOTE: This is designed to be an informative guide for a software engineer develo
             if "developer_consideration" in itm and itm["developer_consideration"]:
                 prompt += f"{indent}│   └── Developer Consideration: \"{itm['developer_consideration']}\"\n"
             if "imports" in itm and itm["imports"]:
-                prompt += f"{indent}│   ├── Imports: {itm['imports']}\n"
+                prompt += f"{indent}│   ├── Imports: {', '.join(itm['imports'])}\n"
             if "functions" in itm and itm["functions"]:
-                prompt += f"{indent}│   ├── Functions: {itm['functions']}\n"
+                prompt += f"{indent}│   ├── Functions: {', '.join(itm['functions'])}\n"
 
-    prompt += "\nNow, here is the new file to describe:\n\n"
+    prompt += "\n---\n\n"
+    prompt += "**Task: Document the following file**\n\n"
     language = file.get("language", "None")
-    prompt += f"File: {file['name']} ({language})\n"
-    if "description" in file and file["description"]:
-        prompt += f"Module Description: {file['description']}\n"
+    prompt += f"**File Path:** {file['name']} ({language})\n"
     if "imports" in file and file["imports"]:
-        prompt += f"Imports: {file['imports']}\n"
+        prompt += f"**Imports:** {', '.join(file['imports'])}\n"
     if "functions" in file and file["functions"]:
-        prompt += f"Functions: {file['functions']}\n"
+        prompt += f"**Functions/Classes:** {', '.join(file['functions'])}\n"
 
-    prompt += "\nGenerate a concise description (5-15 words) for the file and provide a single 'Developer Consideration' focusing on the entire file. Follow this format:\n"
-    prompt += """
-Example:
-├── .gitignore (Git)
-│   └── Developer Consideration: "Uses complex regex patterns for selective ignores, which may lead to unexpected file inclusions/exclusions."
-├── README.md (Markdown)
-│   └── Developer Consideration: "Contains executable code snippets that auto-generate parts of the documentation, requiring careful management of code and doc synchronization."
-├── __init__.py (Python)
-│   └── Developer Consideration: "Implements dynamic importing that can make dependency tracking challenging. Pay attention to potential circular imports."
-├── assistant_cli.py (Python)
-│   └── Description: Orchestrates CLI operations, manages user interactions, and ensures robust application flow.
-│   └── Developer Consideration: "Uses a custom event loop implementation that diverges from standard async patterns, potentially complicating integration with async libraries."
-"""
+    prompt += "\nBased on the file's code and its place in the repository, generate the documentation following the system prompt's format (Description and Developer Consideration)."
 
     messages.append({"role": "user", "content": prompt})
 
@@ -145,20 +180,18 @@ Example:
 def parse_llm_response(content: str, file: dict[str, Any]) -> None:
     """
     Parses the LLM response content and updates the file dictionary.
-    Extracts only the file-level Description and Developer Consideration.
+    Extracts the file-level Description and Developer Consideration.
     """
-    file_desc_pattern = r"Description:\s*(.*)"
-    considerations_pattern = r'Developer Consideration:\s*"(.*?)"'
+    desc_pattern = r"Description:\s*(.*)"
+    consideration_pattern = r'Developer Consideration:\s*"(.*?)"'
 
-    # Extract Description
-    file_desc_match = re.search(file_desc_pattern, content)
-    if file_desc_match:
-        file["description"] = file_desc_match.group(1).strip()
+    desc_match = re.search(desc_pattern, content, re.DOTALL)
+    if desc_match:
+        file["description"] = desc_match.group(1).strip()
 
-    # Extract Developer Consideration for File
-    considerations_match = re.search(considerations_pattern, content)
-    if considerations_match:
-        file["developer_consideration"] = considerations_match.group(1).strip()
+    cons_match = re.search(consideration_pattern, content, re.DOTALL)
+    if cons_match:
+        file["developer_consideration"] = cons_match.group(1).strip()
 
 
 async def rate_limited_api_call(
@@ -171,7 +204,7 @@ async def rate_limited_api_call(
     # Create an SSL context using certifi's CA bundle
     ssl_context = ssl.create_default_context(cafile=certifi.where())
 
-    async with api_semaphore:
+    async with rate_limiter:
         headers = {
             "Authorization": f"Bearer {settings.openrouter_api_key}",
             "HTTP-Referer": settings.http_referer,

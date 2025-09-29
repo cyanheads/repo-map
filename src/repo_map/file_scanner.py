@@ -14,49 +14,42 @@ from repo_map.models import SUPPORTED_LANGUAGES
 
 logger = logging.getLogger(__name__)
 
-
-def parse_gitignore(root_dir: str) -> list[str]:
-    """
-    Parses all .gitignore files in the repository to extract ignore patterns.
-    This considers .gitignore files in nested directories as well.
-    """
-    ignore_patterns = []
-    for dirpath, _, filenames in os.walk(root_dir):
-        if ".gitignore" in filenames:
-            gitignore_path = os.path.join(dirpath, ".gitignore")
-            try:
-                with open(gitignore_path, encoding="utf-8") as f:
-                    patterns = [
-                        line.strip()
-                        for line in f
-                        if line.strip() and not line.startswith("#")
-                    ]
-                    # Prepend the relative path to patterns for nested .gitignore
-                    rel_path = os.path.relpath(dirpath, root_dir)
-                    if rel_path != ".":
-                        patterns = [
-                            os.path.join(rel_path, pattern) for pattern in patterns
-                        ]
-                    ignore_patterns.extend(patterns)
-            except OSError as e:
-                logger.error(
-                    "Error reading .gitignore file at %s: %s", gitignore_path, e
-                )
-    return ignore_patterns
+# A robust list of default patterns to ignore
+DEFAULT_IGNORE_PATTERNS = [
+    # VCS directories
+    ".git/", ".hg/", ".svn/", "CVS/",
+    # Python specific
+    "__pycache__/", "*.pyc", "*.pyo", "*.pyd",
+    ".pytest_cache/", ".mypy_cache/",
+    # Virtual environments
+    ".venv/", "venv/", "env/", ".env",
+    # Build artifacts
+    "build/", "dist/", "*.egg-info/",
+    # Node.js
+    "node_modules/",
+    # OS generated files
+    ".DS_Store",
+    # Tool-specific
+    "*.db", "*.sqlite3", "*.log",
+    # Repo-map specific
+    ".repo-map-cache.db", ".repo_map_structure.json", "*_repo_map.md"
+]
 
 
-def should_ignore(path: str, ignore_spec: pathspec.PathSpec) -> bool:
-    """
-    Determines if a given path should be ignored based on the PathSpec.
+def get_ignore_spec(root_dir: str) -> pathspec.PathSpec:
+    """Creates a PathSpec object from default and .gitignore patterns."""
+    patterns = list(DEFAULT_IGNORE_PATTERNS)
+    gitignore_path = os.path.join(root_dir, ".gitignore")
+    if os.path.exists(gitignore_path):
+        try:
+            with open(gitignore_path, encoding="utf-8") as f:
+                patterns.extend(f.read().splitlines())
+        except OSError as e:
+            logger.warning("Could not read root .gitignore: %s", e)
 
-    Args:
-        path (str): The file or directory path to check.
-        ignore_spec (pathspec.PathSpec): The compiled PathSpec object.
-
-    Returns:
-        bool: True if the path should be ignored, False otherwise.
-    """
-    return ignore_spec.match_file(path)
+    # Filter out empty lines and comments from the final list
+    final_patterns = [p for p in patterns if p.strip() and not p.strip().startswith("#")]
+    return pathspec.PathSpec.from_lines("gitwildmatch", final_patterns)
 
 
 def compute_file_hash(file_path: str) -> str:
@@ -72,103 +65,77 @@ def compute_file_hash(file_path: str) -> str:
         return ""
 
 
+def _process_file(full_path: str, level: int, cache_conn: sqlite3.Connection) -> dict[str, Any]:
+    """Processes a single file, checking cache and parsing if necessary."""
+    _, ext = os.path.splitext(full_path)
+    language = SUPPORTED_LANGUAGES.get(ext.lower())
+
+    file_info = {
+        "name": os.path.basename(full_path),
+        "path": full_path,
+        "level": level,
+        "type": "file",
+        "language": language,
+    }
+
+    if language:
+        file_hash = compute_file_hash(full_path)
+        cursor = cache_conn.cursor()
+        cursor.execute(
+            "SELECT hash, description, developer_consideration, imports, functions FROM cache WHERE path = ?",
+            (full_path,),
+        )
+        row = cursor.fetchone()
+
+        if row and row[0] == file_hash:
+            file_info.update({
+                "description": row[1], "developer_consideration": row[2],
+                "imports": json.loads(row[3]) if row[3] else [],
+                "functions": json.loads(row[4]) if row[4] else [], "hash": file_hash,
+            })
+        else:
+            classes, funcs, consts = get_structure(full_path, language)
+            docstring = get_module_docstring(full_path, language)
+            imports = get_imports(full_path, language)
+            file_info.update({
+                "classes": classes, "functions": funcs, "constants": consts,
+                "imports": imports, "description": docstring, "hash": file_hash,
+            })
+    return file_info
+
+
 def summarize_repo(
     root_dir: str, cache_conn: sqlite3.Connection
 ) -> list[dict[str, Any]]:
-    """
-    Summarizes the repository by walking through directories and files.
-    Includes directories in the summary with appropriate levels.
-    Utilizes cache to skip processing unchanged files.
-    """
-    summary = []
-    ignore_patterns = parse_gitignore(root_dir)
+    """Summarizes the repository by recursively scanning directories and files."""
+    summary: list[dict[str, Any]] = []
+    abs_root_dir = os.path.abspath(root_dir)
+    ignore_spec = get_ignore_spec(abs_root_dir)
 
-    # Add a manual ignore list for generated files
-    manual_ignore_patterns = [".repo_map_structure.json", ".repo-map-cache.db"]
-    additional_patterns = ["*.pkl"] + manual_ignore_patterns
-    combined_patterns = ignore_patterns + additional_patterns
-    ignore_spec = pathspec.PathSpec.from_lines("gitwildmatch", combined_patterns)
+    def _scan(current_path: str, level: int):
+        try:
+            entries = sorted(os.listdir(current_path))
+        except OSError as e:
+            logger.warning("Cannot read directory %s: %s", current_path, e)
+            return
 
-    cursor = cache_conn.cursor()
+        # Sort to prioritize directories
+        entries.sort(key=lambda e: not os.path.isdir(os.path.join(current_path, e)))
 
-    for root, dirs, files in os.walk(root_dir):
-        relative_root = os.path.relpath(root, root_dir)
-        if relative_root == ".":
-            relative_root = ""
+        for name in entries:
+            full_path = os.path.join(current_path, name)
+            relative_path = os.path.relpath(full_path, abs_root_dir)
 
-        # Modify dirs in-place to skip ignored directories
-        dirs[:] = [
-            d
-            for d in dirs
-            if not should_ignore(os.path.join(relative_root, d), ignore_spec)
-        ]
-
-        # Add the current directory to the summary
-        if relative_root != "":
-            dir_info = {
-                "name": os.path.basename(root),
-                "path": root,
-                "level": relative_root.count(os.sep),
-                "type": "directory",
-                "language": None,
-            }
-            summary.append(dir_info)
-
-        for file in sorted(files):
-            full_path = os.path.join(root, file)
-            relative_file_path = os.path.relpath(full_path, root_dir)
-            if should_ignore(relative_file_path, ignore_spec):
+            if ignore_spec.match_file(relative_path):
                 continue
 
-            _, ext = os.path.splitext(file)
-            language = SUPPORTED_LANGUAGES.get(ext.lower())
-            file_info = {
-                "name": file,
-                "path": full_path,
-                "level": relative_file_path.count(os.sep),
-                "type": "file",
-                "language": language,
-            }
+            if os.path.isdir(full_path):
+                dir_info = {"name": name, "path": full_path, "level": level, "type": "directory"}
+                summary.append(dir_info)
+                _scan(full_path, level + 1)
+            elif os.path.isfile(full_path):
+                file_info = _process_file(full_path, level, cache_conn)
+                summary.append(file_info)
 
-            if language:
-                file_hash = compute_file_hash(full_path)
-                cursor.execute(
-                    "SELECT hash, description, developer_consideration, imports, functions FROM cache WHERE path = ?",
-                    (full_path,),
-                )
-                row = cursor.fetchone()
-
-                if row and row[0] == file_hash:
-                    # Use cached descriptions
-                    file_info.update(
-                        {
-                            "description": row[1],
-                            "developer_consideration": row[2],
-                            "imports": json.loads(row[3]) if row[3] else [],
-                            "functions": json.loads(row[4]) if row[4] else [],
-                            "hash": file_hash,
-                        }
-                    )
-                else:
-                    # Need to process this file
-                    (
-                        classes,
-                        functions_extracted,
-                        constants,
-                    ) = get_structure(full_path, language)
-                    module_doc = get_module_docstring(full_path, language)
-                    imports = get_imports(full_path, language)
-                    file_info.update(
-                        {
-                            "classes": classes,
-                            "functions": functions_extracted,
-                            "constants": constants,
-                            "imports": imports,
-                            "description": module_doc,
-                            "hash": file_hash,
-                        }
-                    )
-
-            summary.append(file_info)
-
+    _scan(abs_root_dir, 0)
     return summary
