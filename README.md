@@ -45,7 +45,7 @@ Examples:
 repo-map /path/to/your/repo
 
 # Use a specific model
-repo-map /path/to/your/repo --model anthropic/claude-3-opus
+repo-map /path/to/your/repo --model "google/gemini-2.5-flash-preview-09-2025"
 
 # Auto-accept disclaimer
 repo-map /path/to/your/repo -y

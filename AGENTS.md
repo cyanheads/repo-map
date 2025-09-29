@@ -37,6 +37,24 @@
 4. `_enhance_summary_with_llm()` selects files with structural info, queues them, and streams prompts through `llm_service.get_llm_descriptions()` to populate descriptions, developer considerations, maintenance flags, and key dependencies.
 5. Responses update in-memory structures + cache, `_print_tree()` logs an ASCII map, and `_save_markdown_map()` writes `<repo>_repo_map.md` to disk.
 
+## LLM Expectations
+The `repo-map` tool expects the LLM to provide a comprehensive analysis for each source file. The following is a breakdown of the requested information, which is driven by the `SYSTEM_PROMPT` in `src/repo_map/llm_service.py`:
+
+1.  **Description:** A concise, 20-30 word summary of the file's primary role and responsibility.
+2.  **Developer Consideration:** The single most critical insight for a developer. This could be a non-obvious dependency, a performance pitfall, a security vulnerability, or a crucial usage pattern.
+3.  **Maintenance Flag:** Classify the file's expected change frequency:
+    - `Stable`: Core logic or foundational code that rarely changes.
+    - `Volatile`: Business logic, UI, or configurations subject to frequent iteration.
+    - `Generated`: Machine-produced code; do not edit directly.
+    - `Unknown`: Insufficient context.
+4.  **Critical Dependencies:** Identify the most critical imported modules/packages. For each, provide a brief justification of its importance. Format as a JSON string.
+5.  **Architectural Role:** Classify the file's primary role in the system's architecture (e.g., `UI Component`, `Data Model`, `Service Layer`, `Configuration`, `Utility`, `Entrypoint`).
+6.  **Code Quality Score:** A 1-10 rating of the file's maintainability, readability, and adherence to best practices. 1 is poor, 10 is excellent.
+7.  **Refactoring Suggestions:** A concrete, actionable suggestion for improving the file's structure, performance, or readability. If none, state "None".
+8.  **Security Assessment:** A high-level analysis of potential security risks or vulnerabilities (e.g., data handling, auth, input validation). If none, state "None".
+
+The LLM is expected to return this information in a flat text block with a key-value format.
+
 ## Key Modules
 - `src/repo_map/main.py` – CLI orchestration, disclaimer handling, persistence of results.
 - `src/repo_map/file_scanner.py` – repository walker, root `.gitignore` + default ignore aggregation, hash computation, and cache hydration.
