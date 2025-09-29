@@ -17,22 +17,27 @@ repo-map is an advanced tool for generating comprehensive, AI-enhanced summaries
 - ⚡ Asynchronous processing for improved performance
 
 ## 🛠️ Installation
-Install repo-map using pip:
-```bash
-pip install repo-map
-```
-Additionally, the `repo_map.py` file is designed to be a standalone script that can be easily integrated into any existing project repository.
+1.  Clone the repository:
+    ```bash
+    git clone https://github.com/cyanheads/repo-map.git
+    cd repo-map
+    ```
+2.  Install dependencies using Poetry:
+    ```bash
+    poetry install
+    ```
 
 ## 🚀 Usage
-To generate a repository map, run the following command:
+To generate a repository map, run the following command from the project root:
 ```bash
-repo-map <repository_path> [options]
+poetry run repo-map <repository_path> [options]
 ```
 Replace `<repository_path>` with the path to the repository you want to analyze.
 
 ### Options:
-- `-y,` `--yes`: Automatically accept the disclaimer and proceed without prompting
-- `--model MODEL`: Specify the OpenRouter LLM model to use (default: anthropic/claude-3.5-sonnet)
+- `-y,` `--yes`: Automatically accept the disclaimer and proceed without prompting.
+- `--model MODEL`: Specify the OpenRouter LLM model to use (default: `google/gemini-flash-1.5`).
+- `--concurrency INT`: Set the number of concurrent API calls (default: 3).
 
 Examples:
 ```bash
@@ -77,13 +82,9 @@ Here's an example of a repo-map generated for an advanced Snake game implemented
 This example demonstrates how repo-map provides a comprehensive overview of a Snake game project, including file descriptions, developer considerations, and key structural information.
 
 ## 🔧 Requirements
-- Python 3.7+
-- Dependencies:
-  - requests
-  - tqdm
-  - aiohttp
-  - pathspec
-  - certifi
+- Python 3.12+
+- [Poetry](https://python-poetry.org/) for dependency management.
+- Dependencies are listed in `pyproject.toml`.
 
 ## 🔐 Configuration
 Before using repo-map, you need to set up your OpenRouter API key. Set the following environment variable:
@@ -101,11 +102,13 @@ Replace `your_api_key_here` with your actual OpenRouter API key.
 6. 💾 Saves the output as a Markdown file for easy viewing and sharing
 
 ## 🔑 Key Components
-- `summarize_repo()`: Generates the initial repository summary
-- `enhance_repo_with_llm()`: Enhances the summary with AI-generated descriptions
-- `get_structure()`: Extracts classes, functions, and constants from files
-- `print_tree()`: Displays the repository structure in a tree format
-- `save_tree_map()`: Saves the repository map to a Markdown file
+- `main.py`: The main entry point for the CLI application.
+- `file_scanner.py`: Handles scanning the repository, parsing `.gitignore`, and summarizing files.
+- `code_parser.py`: Extracts structures like classes, functions, and imports from code files.
+- `llm_service.py`: Manages interaction with the LLM for generating descriptions.
+- `cache_manager.py`: Implements caching logic using SQLite to avoid reprocessing unchanged files.
+- `config.py`: Manages application settings and API keys using Pydantic.
+- `models.py`: Contains data models, including the list of supported languages.
 
 ## 📋 Additional Notes
 - The tool supports a wide range of file types and programming languages. Check the `SUPPORTED_LANGUAGES` dictionary in the script for a full list.
@@ -123,7 +126,7 @@ Contributions, issues, and feature requests are welcome! Feel free to check the 
 If you encounter any problems or have any questions, please open an issue in the [GitHub repository](https://github.com/cyanheads/repo-map/issues).
 
 ## 📦 Version
-Current version: 0.1.0
+Current version: 0.2.0
 
 ## ⚠️ Disclaimer
 By using this tool, you acknowledge that files will be sent to the OpenRouter LLM for processing. Ensure you have the necessary permissions and consider any sensitive information in your repository.

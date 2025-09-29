@@ -1,39 +1,45 @@
-[build-system]
-requires = ["setuptools>=45", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[project]
+[tool.poetry]
 name = "repo-map"
-version = "0.1.0"
-authors = [
-    {name = "cyanheads", email = "cyanheads@gmail.com"},
-]
-description = "A tool to generate a structured summary of a software repository, enhanced with AI."
+version = "0.2.0"
+description = "Generate a comprehensive summary and visualization of a repository structure, enhanced with AI-powered descriptions and developer considerations."
+authors = ["Cyanheads <casey@caseyjhand.com>"]
 readme = "README.md"
-requires-python = ">=3.7"
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.7",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-]
+packages = [{ include = "repo_map", from = "src" }]
 
-dependencies = [
-    "requests==2.32.3",
-    "tqdm==4.66.5",
-    "aiohttp==3.10.7",
-    "certifi==2024.8.30",
-    "pathspec==0.12.1",
-]
-
-[project.urls]
+[tool.poetry.urls]
 "Homepage" = "https://github.com/cyanheads/repo-map"
 
-[project.scripts]
-repo-map = "repo_map:run_main"
+[tool.poetry.group.dev.dependencies]
+ruff = "*"
+black = "*"
+pytest = "*"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+aiohttp = "^3.9.5"
+certifi = "^2024.6.2"
+pathspec = "^0.12.1"
+tqdm = "^4.66.4"
+pydantic = "^2.7.4"
+pydantic-settings = "^2.3.4"
+tree-sitter = "^0.21.3"
+tree-sitter-languages = "^1.10.2"
+types-tqdm = "^4.67.0.20250809"
+
+[tool.poetry.scripts]
+repo-map = "repo_map.main:run_main"
+format = "black src"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 120
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]
+
+[tool.black]
+
+[tool.pylint."MESSAGES CONTROL"]
+disable = "C0301"
