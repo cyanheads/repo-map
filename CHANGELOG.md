@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-03-08
+
+### Added
+- `CLAUDE.md` for Claude Code project guidance.
+
+### Changed
+- Updated default LLM model from `google/gemini-2.5-flash-preview-09-2025` to `google/gemini-3-flash-preview`.
+- Updated dependency versions: aiohttp, certifi, pathspec, tqdm, pydantic, pydantic-settings, types-tqdm.
+- Fixed ruff config to use `[tool.ruff.lint]` section for lint rules.
+- Applied Black formatting across all source modules.
+- Modernized type hints: `Optional[X]` → `X | None`.
+- Added `.python-version` to `.gitignore`.
+
 ## [0.5.0] - 2025-09-29
 
 ### Changed
