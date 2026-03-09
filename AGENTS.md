@@ -16,7 +16,7 @@
   export OPENROUTER_API_KEY=<token>
   ```
 - Optional overrides via `.env` or env vars:
-  - `OPENROUTER_MODEL_NAME` (defaults to `google/gemini-2.5-flash-preview-09-2025`)
+  - `OPENROUTER_MODEL_NAME` (defaults to `google/gemini-3-flash-preview`)
   - `API_SEMAPHORE_LIMIT` to tune concurrent calls.
 
 ## Running repo-map

@@ -59,7 +59,7 @@ Replace `<repository_path>` with the path to the repository you want to analyze.
 ### Options
 
 -   `-y`, `--yes`: Automatically accept the disclaimer and proceed without prompting.
--   `--model MODEL`: Specify the OpenRouter LLM model to use (default: `google/gemini-2.5-flash-preview-09-2025`).
+-   `--model MODEL`: Specify the OpenRouter LLM model to use (default: `google/gemini-3-flash-preview`).
 -   `--concurrency INT`: Set the number of concurrent API calls (default: 3).
 
 ### Examples
@@ -69,7 +69,7 @@ Replace `<repository_path>` with the path to the repository you want to analyze.
 repo-map /path/to/your/repo
 
 # Use a specific model
-repo-map /path/to/your/repo --model "google/gemini-2.5-flash-preview-09-2025"
+repo-map /path/to/your/repo --model "google/gemini-3-flash-preview"
 
 # Auto-accept disclaimer
 repo-map /path/to/your/repo -y

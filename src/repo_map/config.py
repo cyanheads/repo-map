@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     )
 
     openrouter_api_key: str | None = None
-    openrouter_model_name: str = "google/gemini-2.5-flash-preview-09-2025"
+    openrouter_model_name: str = "google/gemini-3-flash-preview"
     openrouter_api_url: str = "https://openrouter.ai/api/v1/chat/completions"
 
     # For OpenRouter headers
