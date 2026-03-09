@@ -13,8 +13,7 @@ def load_cache(repo_root: str) -> sqlite3.Connection:
     conn = sqlite3.connect(cache_file_path)
     cursor = conn.cursor()
 
-    cursor.execute(
-        """
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS cache (
             path TEXT PRIMARY KEY,
             hash TEXT,
@@ -29,8 +28,7 @@ def load_cache(repo_root: str) -> sqlite3.Connection:
             refactoring_suggestions TEXT,
             security_assessment TEXT
         )
-        """
-    )
+        """)
 
     cursor.execute("PRAGMA table_info(cache)")
     existing_columns = {info[1] for info in cursor.fetchall()}

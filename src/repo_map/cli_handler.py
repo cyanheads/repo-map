@@ -6,7 +6,7 @@ import logging
 import os
 import sqlite3
 import sys
-from typing import Any, Optional
+from typing import Any
 
 from tqdm import tqdm
 
@@ -28,8 +28,8 @@ class RepoMapApp:
     """Encapsulates the CLI application lifecycle."""
 
     def __init__(self) -> None:
-        self.args: Optional[argparse.Namespace] = None
-        self.cache_conn: Optional[sqlite3.Connection] = None
+        self.args: argparse.Namespace | None = None
+        self.cache_conn: sqlite3.Connection | None = None
 
     async def run(self) -> None:
         """Execute the CLI flow."""
@@ -48,7 +48,9 @@ class RepoMapApp:
             sys.exit(1)
 
         if not os.path.isdir(self.args.repository_path):
-            logger.error("Error: %s is not a valid directory", self.args.repository_path)
+            logger.error(
+                "Error: %s is not a valid directory", self.args.repository_path
+            )
             sys.exit(1)
 
         if not self.args.yes and not self._confirm_disclaimer():
@@ -96,9 +98,7 @@ class RepoMapApp:
         """Enhance file entries with LLM-produced metadata."""
         files_to_process = self._get_files_to_process(structure)
 
-        tasks = [
-            file for file in structure if file["path"] in files_to_process
-        ]
+        tasks = [file for file in structure if file["path"] in files_to_process]
 
         if not tasks:
             logger.info("No new or modified files to enhance. All up to date.")
@@ -115,7 +115,9 @@ class RepoMapApp:
         cursor = self.cache_conn.cursor()
         files_to_process: set[str] = set()
         for item in structure:
-            if item["type"] == "file" and (item.get("imports") or item.get("functions")):
+            if item["type"] == "file" and (
+                item.get("imports") or item.get("functions")
+            ):
                 cursor.execute("SELECT hash FROM cache WHERE path = ?", (item["path"],))
                 row = cursor.fetchone()
                 if not row or row[0] != item.get("hash", ""):

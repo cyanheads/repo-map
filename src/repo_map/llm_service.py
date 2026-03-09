@@ -128,9 +128,7 @@ async def get_llm_descriptions(
                 prompt += f'{details_indent}└── Developer Consideration: "{itm["developer_consideration"]}"\n'
 
     prompt += "\n---\n\n"
-    prompt += (
-        f"**Task: Generate documentation for the file marked above: `{file['path']}`**\n\n"
-    )
+    prompt += f"**Task: Generate documentation for the file marked above: `{file['path']}`**\n\n"
     prompt += "**File Content Summary:**\n"
 
     if file.get("imports"):
@@ -187,24 +185,39 @@ async def get_llm_descriptions(
 
 def parse_llm_response(content: str, file: dict[str, Any]) -> None:
     """Parse the LLM response into the file metadata dictionary."""
+
     def extract(pattern: str, default: str = "") -> str:
         match = re.search(pattern, content, re.IGNORECASE)
         return match.group(1).strip() if match else default
 
     file["description"] = extract(r"Description:\s*(.*)", file.get("description", ""))
-    file["developer_consideration"] = extract(r"Developer Consideration:\s*\"(.*?)\"", file.get("developer_consideration", ""))
-    file["maintenance_flag"] = _normalize_maintenance_flag(extract(r"Maintenance Flag:\s*(.*)", file.get("maintenance_flag", "Unknown")))
-    file["critical_dependencies"] = extract(r"Critical Dependencies:\s*(.*)", file.get("critical_dependencies", "{}"))
-    file["architectural_role"] = extract(r"Architectural Role:\s*(.*)", file.get("architectural_role", "Unknown"))
+    file["developer_consideration"] = extract(
+        r"Developer Consideration:\s*\"(.*?)\"", file.get("developer_consideration", "")
+    )
+    file["maintenance_flag"] = _normalize_maintenance_flag(
+        extract(r"Maintenance Flag:\s*(.*)", file.get("maintenance_flag", "Unknown"))
+    )
+    file["critical_dependencies"] = extract(
+        r"Critical Dependencies:\s*(.*)", file.get("critical_dependencies", "{}")
+    )
+    file["architectural_role"] = extract(
+        r"Architectural Role:\s*(.*)", file.get("architectural_role", "Unknown")
+    )
 
-    quality_score_str = extract(r"Code Quality Score:\s*(\d+)", file.get("code_quality_score", "0"))
+    quality_score_str = extract(
+        r"Code Quality Score:\s*(\d+)", file.get("code_quality_score", "0")
+    )
     try:
         file["code_quality_score"] = int(quality_score_str)
     except (ValueError, TypeError):
         file["code_quality_score"] = 0
 
-    file["refactoring_suggestions"] = extract(r"Refactoring Suggestions:\s*(.*)", file.get("refactoring_suggestions", "None"))
-    file["security_assessment"] = extract(r"Security Assessment:\s*(.*)", file.get("security_assessment", "None"))
+    file["refactoring_suggestions"] = extract(
+        r"Refactoring Suggestions:\s*(.*)", file.get("refactoring_suggestions", "None")
+    )
+    file["security_assessment"] = extract(
+        r"Security Assessment:\s*(.*)", file.get("security_assessment", "None")
+    )
 
 
 def _normalize_maintenance_flag(raw_flag: str) -> str:

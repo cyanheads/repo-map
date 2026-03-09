@@ -160,7 +160,9 @@ def summarize_repo(
             logger.warning("Cannot read directory %s: %s", current_path, exc)
             return
 
-        entries.sort(key=lambda entry: not os.path.isdir(os.path.join(current_path, entry)))
+        entries.sort(
+            key=lambda entry: not os.path.isdir(os.path.join(current_path, entry))
+        )
 
         for name in entries:
             full_path = os.path.join(current_path, name)

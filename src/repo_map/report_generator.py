@@ -9,9 +9,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def format_tree_lines(
-    structure: list[dict[str, Any]]
-) -> Generator[str, None, None]:
+def format_tree_lines(structure: list[dict[str, Any]]) -> Generator[str, None, None]:
     """Yield lines that represent the repository tree with metadata."""
     for i, item in enumerate(structure):
         prefix = ""

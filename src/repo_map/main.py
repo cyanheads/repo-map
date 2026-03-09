@@ -4,6 +4,7 @@ Main script for the repo-map tool.
 Provides a CLI for generating a structured summary of a software repository and
 enhancing it with AI-generated documentation hints.
 """
+
 import asyncio
 import logging
 import sys
