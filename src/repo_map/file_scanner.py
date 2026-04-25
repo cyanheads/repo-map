@@ -43,8 +43,14 @@ DEFAULT_IGNORE_PATTERNS = [
 ]
 
 
-def get_ignore_spec(root_dir: str) -> pathspec.PathSpec:
-    """Create a PathSpec combining default patterns with the root .gitignore."""
+def get_ignore_spec(root_dir: str) -> pathspec.GitIgnoreSpec:
+    """Create a GitIgnoreSpec combining default patterns with the root .gitignore.
+
+    Uses ``GitIgnoreSpec`` (rather than ``PathSpec`` with the deprecated
+    ``"gitwildmatch"`` alias) so matching mirrors Git's actual behavior on
+    edge cases like negation inside ignored directories — important since the
+    point is to skip exactly what Git would skip.
+    """
     patterns = list(DEFAULT_IGNORE_PATTERNS)
     gitignore_path = os.path.join(root_dir, ".gitignore")
     if os.path.exists(gitignore_path):
@@ -55,7 +61,7 @@ def get_ignore_spec(root_dir: str) -> pathspec.PathSpec:
             logger.warning("Could not read root .gitignore: %s", exc)
 
     filtered = [p for p in patterns if p.strip() and not p.strip().startswith("#")]
-    return pathspec.PathSpec.from_lines("gitwildmatch", filtered)
+    return pathspec.GitIgnoreSpec.from_lines(filtered)
 
 
 def compute_file_hash(file_path: str) -> str:
