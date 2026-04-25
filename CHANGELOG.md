@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-04-25
+
+### Added
+- `skills/maintenance/SKILL.md` — workflow for dependency updates, with auto-sync to `.agents/skills/` and `.claude/skills/` mirrors via `scripts/sync_skills.py` and a Claude Code `PostToolUse` hook in `.claude/settings.json`.
+- `sync-skills` Poetry script (`poetry run sync-skills`).
+
+### Changed
+- `file_scanner.py`: migrated `pathspec.PathSpec.from_lines("gitwildmatch", …)` → `pathspec.GitIgnoreSpec.from_lines(…)` for closer fidelity to Git's actual ignore semantics (especially negation patterns inside otherwise-ignored directories). The `gitwildmatch` alias has been deprecated since pathspec 1.0.
+- Updated dependencies (in-range): aiohttp 3.13.3→3.13.5, pathspec 1.0.4→1.1.0, pydantic 2.12.5→2.13.3, pydantic-settings 2.13.1→2.14.0, certifi 2026.2.25→2026.4.22, ruff 0.15.5→0.15.12, black 26.3.0→26.3.1, pytest 9.0.2→9.0.3, types-tqdm patch, plus transitive bumps.
+
+### Deferred
+- `tree-sitter` 0.21.3 → 0.25.2 not taken: `tree-sitter-languages` 1.10.2 (last released 2024-02) bundles binary wheels built against the old tree-sitter ABI and would break at runtime. Proper fix is migrating off `tree-sitter-languages` to per-language packages (`tree-sitter-python`, `tree-sitter-javascript`, etc.) — separate work.
+
 ## [0.7.0] - 2026-03-08
 
 ### Added
