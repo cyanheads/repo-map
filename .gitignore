@@ -184,7 +184,9 @@ docs/api/
 .storage/
 repomix-output*
 duckdata/
-.claude
+.claude/*
+!.claude/settings.json
+.agents/
 data/
 docs/devdocs.md
 

@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -er '.tool_input.file_path // empty' 2>/dev/null | grep -q '/skills/' && python3 \"$CLAUDE_PROJECT_DIR/scripts/sync_skills.py\" >/dev/null 2>&1 || true"
+          }
+        ]
+      }
+    ]
+  }
+}

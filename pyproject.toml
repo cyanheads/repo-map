@@ -30,6 +30,7 @@ types-tqdm = "^4.67.3.20260303"
 [tool.poetry.scripts]
 repo-map = "repo_map.main:run_main"
 format = "scripts:run_format"
+sync-skills = "scripts:run_sync_skills"
 
 [build-system]
 requires = ["poetry-core"]
