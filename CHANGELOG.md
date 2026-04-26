@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-04-25
+
+### Changed
+- `llm_service.py`: reworked the LLM contract from a flat text key-value block to a single JSON object. The OpenRouter request now sets `response_format: {"type": "json_object"}` for structured output, and `parse_llm_response` ingests JSON (tolerating ```` ```json ```` fences from non-compliant models). The user prompt is now built by `_build_user_prompt`, which emits a cleaner indented tree using paths relative to the repo root.
+- `llm_service.py`: closed-enum `architectural_role` with `_normalize_architectural_role`, snapping unknown roles to `Other`. `Service Layer` is now `Service`; added `Persistence`, `API Route`, `Test`, `Tooling`, `Other`.
+- `config.py`: default model changed from `google/gemini-3-flash-preview` to `anthropic/claude-sonnet-4.6`.
+- `report_generator.py`: dropped surrounding quotes from the `Developer Consideration:` tree line for cleaner output.
+- `AGENTS.md`, `CLAUDE.md`, `README.md`, `examples/example.md`: documentation refreshed to match the new JSON schema, default model, and tightened architectural role values.
+
+### Removed
+- `code_quality_score` field across the LLM response schema, cache schema (`cache_manager.py`), insert/select paths (`cli_handler.py`, `file_scanner.py`), and tree rendering (`report_generator.py`). Existing caches retain the column harmlessly; new caches omit it.
+
 ## [0.7.1] - 2026-04-25
 
 ### Added
