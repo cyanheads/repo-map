@@ -3,7 +3,7 @@
 ## Project TL;DR
 - CLI tool that scans a target repository, extracts structural metadata, then asks an OpenRouter LLM to summarize interesting files.
 - Caching layer (`.repo-map-cache.db`) avoids re-sending unchanged files; pre-enhanced results land in `.repo_map_structure.json`.
-- Output is both a console tree and `<repo_name>_repo_map.md` stored beside the analyzed repo.
+- Output is both a console tree and `<repo_name>_repo_map.md` written at the root of the analyzed repo.
 
 ## Local Setup
 - Requirements: Python 3.12+, Poetry, OpenRouter API key.

@@ -103,7 +103,7 @@ The request sets `response_format: {"type": "json_object"}` to enforce structure
 ## Output
 
 - Console: ASCII tree visualization
-- File: `<repo_name>_repo_map.md` saved in parent directory of analyzed repo
+- File: `<repo_name>_repo_map.md` saved at the root of the analyzed repo
 - Structure: `.repo_map_structure.json` in analyzed repo root
 
 ## Important Notes
