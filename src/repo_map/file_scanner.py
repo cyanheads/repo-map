@@ -107,7 +107,6 @@ def _process_file(
                maintenance_flag,
                critical_dependencies,
                architectural_role,
-               code_quality_score,
                refactoring_suggestions,
                security_assessment
         FROM cache
@@ -128,9 +127,8 @@ def _process_file(
                 "maintenance_flag": row[5] or "Unknown",
                 "critical_dependencies": row[6] or "{}",
                 "architectural_role": row[7] or "Unknown",
-                "code_quality_score": row[8] or 0,
-                "refactoring_suggestions": row[9] or "None",
-                "security_assessment": row[10] or "None",
+                "refactoring_suggestions": row[8] or "None",
+                "security_assessment": row[9] or "None",
             }
         )
         return file_info

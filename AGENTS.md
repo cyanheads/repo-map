@@ -16,7 +16,7 @@
   export OPENROUTER_API_KEY=<token>
   ```
 - Optional overrides via `.env` or env vars:
-  - `OPENROUTER_MODEL_NAME` (defaults to `google/gemini-3-flash-preview`)
+  - `OPENROUTER_MODEL_NAME` (defaults to `anthropic/claude-sonnet-4.6`)
   - `API_SEMAPHORE_LIMIT` to tune concurrent calls.
 
 ## Running repo-map
@@ -38,22 +38,21 @@
 5. Responses update in-memory structures + cache, `_print_tree()` logs an ASCII map, and `_save_markdown_map()` writes `<repo>_repo_map.md` to disk.
 
 ## LLM Expectations
-The `repo-map` tool expects the LLM to provide a comprehensive analysis for each source file. The following is a breakdown of the requested information, which is driven by the `SYSTEM_PROMPT` in `src/repo_map/llm_service.py`:
+The tool sends each file to the LLM with the repository tree as background and expects a JSON object with these fields (defined in `SYSTEM_PROMPT` in `src/repo_map/llm_service.py`):
 
-1.  **Description:** A concise, 20-30 word summary of the file's primary role and responsibility.
-2.  **Developer Consideration:** The single most critical insight for a developer. This could be a non-obvious dependency, a performance pitfall, a security vulnerability, or a crucial usage pattern.
-3.  **Maintenance Flag:** Classify the file's expected change frequency:
-    - `Stable`: Core logic or foundational code that rarely changes.
-    - `Volatile`: Business logic, UI, or configurations subject to frequent iteration.
-    - `Generated`: Machine-produced code; do not edit directly.
-    - `Unknown`: Insufficient context.
-4.  **Critical Dependencies:** Identify the most critical imported modules/packages. For each, provide a brief justification of its importance. Format as a JSON string.
-5.  **Architectural Role:** Classify the file's primary role in the system's architecture (e.g., `UI Component`, `Data Model`, `Service Layer`, `Configuration`, `Utility`, `Entrypoint`).
-6.  **Code Quality Score:** A 1-10 rating of the file's maintainability, readability, and adherence to best practices. 1 is poor, 10 is excellent.
-7.  **Refactoring Suggestions:** A concrete, actionable suggestion for improving the file's structure, performance, or readability. If none, state "None".
-8.  **Security Assessment:** A high-level analysis of potential security risks or vulnerabilities (e.g., data handling, auth, input validation). If none, state "None".
+1.  **`description`** (string) — 1-2 sentences on the file's role and responsibility.
+2.  **`developer_consideration`** (string | null) — The single most important thing a contributor needs to know: a non-obvious dependency, performance pitfall, security concern, or usage pattern.
+3.  **`maintenance_flag`** — One of:
+    - `Stable`: foundational; rarely changes.
+    - `Volatile`: under active iteration (business logic, UI, configuration).
+    - `Generated`: machine-produced; do not edit.
+    - `Unknown`: insufficient context.
+4.  **`critical_dependencies`** (object) — Map of import name → one-line justification. Empty object if none notable.
+5.  **`architectural_role`** — One of: `Entrypoint`, `Configuration`, `Service`, `Data Model`, `Persistence`, `UI Component`, `API Route`, `Utility`, `Test`, `Tooling`, `Other`.
+6.  **`refactoring_suggestions`** (string | null) — Concrete and actionable, or null if the file is sound.
+7.  **`security_assessment`** (string | null) — Specific risk and mitigation, or null if no concern.
 
-The LLM is expected to return this information in a flat text block with a key-value format.
+The OpenRouter request sets `response_format: {"type": "json_object"}` to enforce structured output. The parser tolerates ```json fences from models that add them despite the instruction.
 
 ## Key Modules
 - `src/repo_map/main.py` – CLI orchestration, disclaimer handling, persistence of results.

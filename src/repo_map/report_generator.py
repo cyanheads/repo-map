@@ -52,7 +52,7 @@ def format_tree_lines(structure: list[dict[str, Any]]) -> Generator[str, None, N
             detail_lines.append(f"Description: {item['description']}")
         if item.get("developer_consideration"):
             detail_lines.append(
-                f'Developer Consideration: "{item["developer_consideration"]}"'
+                f"Developer Consideration: {item['developer_consideration']}"
             )
 
         maintenance_flag = item.get("maintenance_flag")
@@ -62,10 +62,6 @@ def format_tree_lines(structure: list[dict[str, Any]]) -> Generator[str, None, N
         architectural_role = item.get("architectural_role")
         if architectural_role and architectural_role != "Unknown":
             detail_lines.append(f"Architectural Role: {architectural_role}")
-
-        code_quality_score = item.get("code_quality_score")
-        if code_quality_score and code_quality_score > 0:
-            detail_lines.append(f"Code Quality Score: {code_quality_score}/10")
 
         refactoring_suggestions = item.get("refactoring_suggestions")
         if refactoring_suggestions and refactoring_suggestions != "None":

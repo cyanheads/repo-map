@@ -59,7 +59,7 @@ Replace `<repository_path>` with the path to the repository you want to analyze.
 ### Options
 
 -   `-y`, `--yes`: Automatically accept the disclaimer and proceed without prompting.
--   `--model MODEL`: Specify the OpenRouter LLM model to use (default: `google/gemini-3-flash-preview`).
+-   `--model MODEL`: Specify the OpenRouter LLM model to use (default: `anthropic/claude-sonnet-4.6`).
 -   `--concurrency INT`: Set the number of concurrent API calls (default: 3).
 
 ### Examples
@@ -69,7 +69,7 @@ Replace `<repository_path>` with the path to the repository you want to analyze.
 repo-map /path/to/your/repo
 
 # Use a specific model
-repo-map /path/to/your/repo --model "google/gemini-3-flash-preview"
+repo-map /path/to/your/repo --model "anthropic/claude-sonnet-4.6"
 
 # Auto-accept disclaimer
 repo-map /path/to/your/repo -y
@@ -82,21 +82,18 @@ Here's an example of a repo-map generated for an advanced Snake game implemented
 ```markdown
 / (SSSnakeGame)
 ├── main.py (Python)
-│   ├── Description: Entry point for the Snake game, initializes the game environment and runs the main event loop.
-│   ├── Developer Consideration: "The game loop is tightly bound to Pygame's event system; any significant changes will require familiarity with Pygame's architecture."
+│   ├── Description: Entry point for the Snake game; initializes Pygame and runs the main event loop.
+│   ├── Developer Consideration: The game loop is tightly bound to Pygame's event system; significant changes require Pygame familiarity.
 │   ├── Maintenance Flag: Stable
 │   ├── Architectural Role: Entrypoint
-│   ├── Code Quality Score: 8/10
-│   ├── Refactoring Suggestions: "Isolate game state management from the rendering logic to improve testability and reduce complexity."
-│   └── Security Assessment: "None"
+│   ├── Refactoring Suggestions: Isolate game state from rendering to improve testability and reduce complexity.
+│   ├── Critical Dependencies:
+│   └──   - pygame: Game loop, input handling, and rendering.
 ├── config.py (Python)
-│   ├── Description: Centralizes all static configuration parameters for the game, such as screen dimensions, colors, and snake speed.
-│   ├── Developer Consideration: "Changing screen dimensions may require adjustments to the food spawning logic to ensure it appears within bounds."
+│   ├── Description: Centralizes static configuration (screen dimensions, colors, snake speed).
+│   ├── Developer Consideration: Changing screen dimensions may require adjustments to food spawning to keep it in bounds.
 │   ├── Maintenance Flag: Volatile
-│   ├── Architectural Role: Configuration
-│   ├── Code Quality Score: 9/10
-│   ├── Refactoring Suggestions: "Consider using a more structured configuration format like YAML or JSON for easier management, especially if settings become more complex."
-│   └── Security Assessment: "None"
+│   └── Architectural Role: Configuration
 ├── assets/
 │   ├── images/
 │   │   ├── snake_head.png (Image)
@@ -105,9 +102,9 @@ Here's an example of a repo-map generated for an advanced Snake game implemented
 │       ├── eat.wav (Audio)
 │       └── game_over.mp3 (Audio)
 ├── requirements.txt (Text)
-│   └── Description: Lists all Python package dependencies required to run the project, such as `pygame`.
+│   └── Description: Lists Python package dependencies required to run the project, such as `pygame`.
 └── README.md (Markdown)
-    └── Description: Provides a comprehensive overview of the project, including setup instructions, gameplay details, and contribution guidelines.
+    └── Description: Project overview including setup instructions, gameplay details, and contribution guidelines.
 └──────────────
 ```
 

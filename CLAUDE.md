@@ -23,7 +23,7 @@ export OPENROUTER_API_KEY=your_key_here
 poetry run repo-map /path/to/repository
 
 # With options
-poetry run repo-map /path/to/repo --model "google/gemini-3-flash-preview" --concurrency 3 -y
+poetry run repo-map /path/to/repo --model "anthropic/claude-sonnet-4.6" --concurrency 3 -y
 ```
 
 ### Development
@@ -75,24 +75,24 @@ When files change, their hash changes and they're reprocessed. Delete `.repo-map
 
 Settings are loaded from environment variables or `.env` file via Pydantic:
 - `OPENROUTER_API_KEY` - **Required**
-- `OPENROUTER_MODEL_NAME` - Default: `google/gemini-3-flash-preview`
+- `OPENROUTER_MODEL_NAME` - Default: `anthropic/claude-sonnet-4.6`
 - `API_SEMAPHORE_LIMIT` - Concurrent API calls (default: 3)
 
 All settings defined in [config.py](src/repo_map/config.py) as a singleton `settings` object.
 
 ## LLM Expectations
 
-The tool expects the LLM to analyze each file and return:
-1. **Description** - 20-30 word summary of file purpose
-2. **Developer Consideration** - Most critical insight (dependencies, pitfalls, patterns)
-3. **Maintenance Flag** - Stable, Volatile, Generated, or Unknown
-4. **Critical Dependencies** - Key imports with justification (JSON format)
-5. **Architectural Role** - UI Component, Data Model, Service Layer, Configuration, Utility, Entrypoint, etc.
-6. **Code Quality Score** - 1-10 rating
-7. **Refactoring Suggestions** - Concrete improvement recommendation
-8. **Security Assessment** - Potential security risks or "None"
+The tool sends each file to the LLM with the repository tree as background and expects a JSON object with these fields:
 
-Prompt is defined in `SYSTEM_PROMPT` in [llm_service.py](src/repo_map/llm_service.py).
+1. **`description`** (string) - 1-2 sentences on the file's role and responsibility
+2. **`developer_consideration`** (string | null) - Single most important thing a contributor needs to know
+3. **`maintenance_flag`** - One of: `Stable`, `Volatile`, `Generated`, `Unknown`
+4. **`critical_dependencies`** (object) - Map of import name → one-line justification
+5. **`architectural_role`** - One of: `Entrypoint`, `Configuration`, `Service`, `Data Model`, `Persistence`, `UI Component`, `API Route`, `Utility`, `Test`, `Tooling`, `Other`
+6. **`refactoring_suggestions`** (string | null) - Concrete and actionable, or null
+7. **`security_assessment`** (string | null) - Specific risk and mitigation, or null
+
+The request sets `response_format: {"type": "json_object"}` to enforce structured output. Prompt is defined as `SYSTEM_PROMPT` in [llm_service.py](src/repo_map/llm_service.py).
 
 ## Adding Language Support
 

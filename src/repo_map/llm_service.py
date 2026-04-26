@@ -1,8 +1,9 @@
 """Handles interactions with the Language Learning Model (LLM)."""
 
 import asyncio
+import json
 import logging
-import re
+import os
 import ssl
 from typing import Any
 
@@ -50,50 +51,64 @@ def update_api_semaphore_limit(limit: int) -> None:
     rate_limiter.update_limit(limit)
 
 
+ARCHITECTURAL_ROLES = (
+    "Entrypoint",
+    "Configuration",
+    "Service",
+    "Data Model",
+    "Persistence",
+    "UI Component",
+    "API Route",
+    "Utility",
+    "Test",
+    "Tooling",
+    "Other",
+)
+
 SYSTEM_PROMPT = """
-**Objective:** You are a principal-level software architect. Your task is to generate a comprehensive, machine-readable analysis for a given source file, grounded in its content and its position within the full repository structure.
+You analyze a single source file and return structured JSON documentation. The user supplies the repository tree (with prior documentation where available) for context, plus the target file's path, language, imports, and top-level symbols.
 
-**Analytical Directives:**
+Return one JSON object with exactly these fields:
 
-1.  **Description:** A concise, 20-30 word summary of the file's primary role and responsibility.
-2.  **Developer Consideration:** The single most critical insight for a developer. This could be a non-obvious dependency, a performance pitfall, a security vulnerability, or a crucial usage pattern.
-3.  **Maintenance Flag:** Classify the file's expected change frequency:
-    - `Stable`: Core logic or foundational code that rarely changes.
-    - `Volatile`: Business logic, UI, or configurations subject to frequent iteration.
-    - `Generated`: Machine-produced code; do not edit directly.
-    - `Unknown`: Insufficient context.
-4.  **Critical Dependencies:** Identify the most critical imported modules/packages. For each, provide a brief justification of its importance. Format as a JSON string.
-5.  **Architectural Role:** Classify the file's primary role in the system's architecture (e.g., `UI Component`, `Data Model`, `Service Layer`, `Configuration`, `Utility`, `Entrypoint`).
-6.  **Code Quality Score:** A 1-10 rating of the file's maintainability, readability, and adherence to best practices. 1 is poor, 10 is excellent.
-7.  **Refactoring Suggestions:** A concrete, actionable suggestion for improving the file's structure, performance, or readability. If none, state "None".
-8.  **Security Assessment:** A high-level analysis of potential security risks or vulnerabilities (e.g., data handling, auth, input validation). If none, state "None".
+{
+  "description": string,                          // 1-2 sentences on the file's role and responsibility
+  "developer_consideration": string | null,       // The single most important thing a contributor needs to know — non-obvious dependency, performance pitfall, security concern, or usage pattern. null if nothing stands out.
+  "maintenance_flag": "Stable" | "Volatile" | "Generated" | "Unknown",
+  "critical_dependencies": { [import_name: string]: string },  // import name -> one-line justification; empty object if none notable
+  "architectural_role": "Entrypoint" | "Configuration" | "Service" | "Data Model" | "Persistence" | "UI Component" | "API Route" | "Utility" | "Test" | "Tooling" | "Other",
+  "refactoring_suggestions": string | null,       // concrete, actionable; null if the file is sound
+  "security_assessment": string | null            // specific risk and mitigation; null if no concern
+}
 
-**Output Specification:**
-- Your response must be a flat text block containing exactly eight lines, strictly adhering to the key-value format below.
-- `Critical Dependencies` must be a valid JSON string.
+Maintenance flag values:
+- Stable: foundational; rarely changes
+- Volatile: under active iteration (business logic, UI, configuration)
+- Generated: machine-produced; do not edit
+- Unknown: insufficient context
 
-```
-Description: <20-30 word summary of the file's purpose>
-Developer Consideration: "<Actionable insight for developers>"
-Maintenance Flag: <Stable|Volatile|Generated|Unknown>
-Critical Dependencies: <JSON string: {"dependency": "justification", ...}>
-Architectural Role: <Primary architectural role>
-Code Quality Score: <1-10>
-Refactoring Suggestions: <Concrete suggestion or "None">
-Security Assessment: <Security analysis or "None">
-```
+Guidelines:
+- Ground every claim in the file's actual content and symbols. Use the repo tree to disambiguate role, not as a substitute for the file's evidence.
+- Evaluate against the conventions of the file's language, not generic best practices.
+- Test files are judged as tests (clarity, isolation, coverage), not as production code.
+- Trivial files (empty `__init__.py`, single-line config, simple re-exports): provide description only; null/Unknown the rest.
+- Prefer null and "Unknown" over guessing. Speculation is worse than absence.
+- Reference dependencies by import name (e.g. "aiohttp", "@tanstack/react-query"), not by description.
+- When refining existing documentation, preserve accurate prior content; only revise where you have stronger evidence.
+- Output the JSON object only — no prose before or after, no markdown fences.
 
-**Example Output for a Modern TypeScript Project (2025):**
-```
-Description: Provides a reactive hook for fetching, caching, and globally managing authenticated user session data across the application.
-Developer Consideration: "Leverages stale-while-revalidate caching; initial renders may show stale data for a moment before the background refetch completes."
-Maintenance Flag: Stable
-Critical Dependencies: {"@tanstack/react-query": "Manages asynchronous state, caching, and server-state synchronization."}
-Architectural Role: State Management Hook
-Code Quality Score: 9
-Refactoring Suggestions: "Consider abstracting the query key into a shared constant to prevent inconsistencies across the codebase."
-Security Assessment: "Ensure that sensitive user data returned by this hook is not exposed in client-side logs or error messages."
-```
+Example output:
+{
+  "description": "Async OpenRouter client with semaphore-based concurrency limits and exponential-backoff retry on rate-limit responses.",
+  "developer_consideration": "Rate limiter is a module-level singleton; tests must reset or override it to avoid state bleed across cases.",
+  "maintenance_flag": "Volatile",
+  "critical_dependencies": {
+    "aiohttp": "Async HTTP transport for non-blocking concurrent requests.",
+    "certifi": "Root CA bundle for SSL verification on platforms with stale system stores."
+  },
+  "architectural_role": "Service",
+  "refactoring_suggestions": "Extract the response-handling branches into a typed result object to clarify success vs error paths.",
+  "security_assessment": null
+}
 """.strip()
 
 
@@ -104,43 +119,10 @@ async def get_llm_descriptions(
     max_retries: int = 3,
 ) -> None:
     """Generate file-level documentation via the configured LLM."""
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-    prompt = "**Background Context: Full Repository Map**\n"
-    prompt += "Your task is to provide detailed documentation for the file marked with `-> CURRENT FILE <-`.\n"
-    prompt += "The full repository map is provided for complete context. Existing documentation should be used to inform your response.\n\n"
-
-    for itm in structure:
-        is_current_file = itm["path"] == file["path"]
-        marker = " -> CURRENT FILE <-" if is_current_file else ""
-        indent = "│   " * itm["level"]
-
-        if itm["type"] == "directory":
-            prompt += f"{indent}├── {itm['name']}/\n"
-        elif itm["type"] == "file":
-            language = itm.get("language", "None")
-            prompt += f"{indent}├── {itm['path']} ({language}){marker}\n"
-
-            details_indent = indent + "│   "
-            if itm.get("description"):
-                prompt += f"{details_indent}└── Description: {itm['description']}\n"
-            if itm.get("developer_consideration"):
-                prompt += f'{details_indent}└── Developer Consideration: "{itm["developer_consideration"]}"\n'
-
-    prompt += "\n---\n\n"
-    prompt += f"**Task: Generate documentation for the file marked above: `{file['path']}`**\n\n"
-    prompt += "**File Content Summary:**\n"
-
-    if file.get("imports"):
-        prompt += f"- Imports: {', '.join(file['imports'])}\n"
-    if file.get("functions"):
-        prompt += f"- Functions/Classes: {', '.join(file['functions'])}\n"
-    if not file.get("imports") and not file.get("functions"):
-        prompt += "- (No symbols extracted)\n"
-
-    prompt += "\nBased on the full repository context and the file's content summary, provide the eight required documentation fields in the specified format."
-
-    messages.append({"role": "user", "content": prompt})
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": _build_user_prompt(structure, file)},
+    ]
 
     retries = 0
     while retries < max_retries:
@@ -183,41 +165,117 @@ async def get_llm_descriptions(
     )
 
 
+def _build_user_prompt(structure: list[dict[str, Any]], file: dict[str, Any]) -> str:
+    """Build the user message: repository tree as background, target file as the task."""
+    repo_root = os.path.dirname(structure[0]["path"]) if structure else ""
+
+    def rel(path: str) -> str:
+        return os.path.relpath(path, repo_root) if repo_root else path
+
+    lines = ["Repository tree (background context):", ""]
+    for itm in structure:
+        indent = "  " * itm["level"]
+        if itm["type"] == "directory":
+            lines.append(f"{indent}- {itm['name']}/")
+            continue
+
+        language = itm.get("language") or "—"
+        is_current = itm["path"] == file["path"]
+        marker = "  [CURRENT FILE]" if is_current else ""
+        lines.append(f"{indent}- {rel(itm['path'])} ({language}){marker}")
+
+        detail_indent = indent + "    "
+        if itm.get("description"):
+            lines.append(f"{detail_indent}description: {itm['description']}")
+        if itm.get("developer_consideration"):
+            lines.append(
+                f"{detail_indent}consideration: {itm['developer_consideration']}"
+            )
+
+    lines.extend(
+        [
+            "",
+            f"Target file: `{rel(file['path'])}` ({file.get('language') or 'unknown'})",
+        ]
+    )
+    if file.get("imports"):
+        lines.append(f"Imports: {', '.join(file['imports'])}")
+    if file.get("functions"):
+        lines.append(f"Symbols: {', '.join(file['functions'])}")
+    if not file.get("imports") and not file.get("functions"):
+        lines.append("(No symbols extracted — likely config, data, or trivial.)")
+
+    lines.append("")
+    lines.append("Return the JSON object specified in the system prompt.")
+    return "\n".join(lines)
+
+
 def parse_llm_response(content: str, file: dict[str, Any]) -> None:
-    """Parse the LLM response into the file metadata dictionary."""
+    """Parse the LLM's JSON response into the file metadata dictionary."""
+    data = _load_json(content)
+    if not isinstance(data, dict):
+        logger.error(
+            "LLM response was not a JSON object for %s",
+            file.get("path", "<unknown>"),
+        )
+        return
 
-    def extract(pattern: str, default: str = "") -> str:
-        match = re.search(pattern, content, re.IGNORECASE)
-        return match.group(1).strip() if match else default
-
-    file["description"] = extract(r"Description:\s*(.*)", file.get("description", ""))
-    file["developer_consideration"] = extract(
-        r"Developer Consideration:\s*\"(.*?)\"", file.get("developer_consideration", "")
+    file["description"] = _coerce_str(
+        data.get("description"), file.get("description", "")
+    )
+    file["developer_consideration"] = _coerce_str(
+        data.get("developer_consideration"), file.get("developer_consideration", "")
     )
     file["maintenance_flag"] = _normalize_maintenance_flag(
-        extract(r"Maintenance Flag:\s*(.*)", file.get("maintenance_flag", "Unknown"))
-    )
-    file["critical_dependencies"] = extract(
-        r"Critical Dependencies:\s*(.*)", file.get("critical_dependencies", "{}")
-    )
-    file["architectural_role"] = extract(
-        r"Architectural Role:\s*(.*)", file.get("architectural_role", "Unknown")
+        _coerce_str(data.get("maintenance_flag"), "Unknown")
     )
 
-    quality_score_str = extract(
-        r"Code Quality Score:\s*(\d+)", file.get("code_quality_score", "0")
+    deps = data.get("critical_dependencies")
+    file["critical_dependencies"] = json.dumps(deps if isinstance(deps, dict) else {})
+
+    file["architectural_role"] = _normalize_architectural_role(
+        _coerce_str(data.get("architectural_role"), "Unknown")
     )
+    file["refactoring_suggestions"] = (
+        _coerce_str(
+            data.get("refactoring_suggestions"),
+            file.get("refactoring_suggestions", "None"),
+        )
+        or "None"
+    )
+    file["security_assessment"] = (
+        _coerce_str(
+            data.get("security_assessment"), file.get("security_assessment", "None")
+        )
+        or "None"
+    )
+
+
+def _load_json(content: str) -> Any:
+    """Parse JSON, tolerating ```json fences some models add despite instructions."""
     try:
-        file["code_quality_score"] = int(quality_score_str)
-    except (ValueError, TypeError):
-        file["code_quality_score"] = 0
+        return json.loads(content)
+    except json.JSONDecodeError:
+        stripped = content.strip()
+        for fence in ("```json", "```JSON", "```"):
+            if stripped.startswith(fence):
+                stripped = stripped[len(fence) :].lstrip()
+                break
+        if stripped.endswith("```"):
+            stripped = stripped[:-3].rstrip()
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            logger.error("Could not parse LLM response as JSON: %s", exc)
+            return None
 
-    file["refactoring_suggestions"] = extract(
-        r"Refactoring Suggestions:\s*(.*)", file.get("refactoring_suggestions", "None")
-    )
-    file["security_assessment"] = extract(
-        r"Security Assessment:\s*(.*)", file.get("security_assessment", "None")
-    )
+
+def _coerce_str(value: Any, default: str) -> str:
+    """Return value as a stripped string, falling back to default for null/empty."""
+    if value is None:
+        return default
+    text = str(value).strip()
+    return text or default
 
 
 def _normalize_maintenance_flag(raw_flag: str) -> str:
@@ -233,10 +291,16 @@ def _normalize_maintenance_flag(raw_flag: str) -> str:
         "autogenerated": "Generated",
         "unstable": "Volatile",
     }
-    if candidate in mappings:
-        return mappings[candidate]
+    return mappings.get(candidate, "Unknown")
 
-    return "Unknown"
+
+def _normalize_architectural_role(raw_role: str) -> str:
+    """Snap architectural role to the closed enum, defaulting to 'Other'."""
+    candidate = raw_role.strip()
+    if candidate in ARCHITECTURAL_ROLES:
+        return candidate
+    lookup = {role.lower(): role for role in ARCHITECTURAL_ROLES}
+    return lookup.get(candidate.lower(), "Other")
 
 
 async def rate_limited_api_call(
@@ -255,6 +319,7 @@ async def rate_limited_api_call(
             "model": model,
             "messages": messages,
             "temperature": temperature,
+            "response_format": {"type": "json_object"},
         }
         try:
             async with aiohttp.ClientSession() as session:

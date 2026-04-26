@@ -24,7 +24,6 @@ def load_cache(repo_root: str) -> sqlite3.Connection:
             maintenance_flag TEXT,
             critical_dependencies TEXT,
             architectural_role TEXT,
-            code_quality_score INTEGER,
             refactoring_suggestions TEXT,
             security_assessment TEXT
         )
@@ -40,7 +39,6 @@ def load_cache(repo_root: str) -> sqlite3.Connection:
         "maintenance_flag": "TEXT",
         "critical_dependencies": "TEXT",
         "architectural_role": "TEXT",
-        "code_quality_score": "INTEGER",
         "refactoring_suggestions": "TEXT",
         "security_assessment": "TEXT",
     }

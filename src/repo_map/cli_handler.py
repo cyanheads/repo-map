@@ -140,11 +140,10 @@ class RepoMapApp:
                 maintenance_flag,
                 critical_dependencies,
                 architectural_role,
-                code_quality_score,
                 refactoring_suggestions,
                 security_assessment
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 file_data["path"],
@@ -156,7 +155,6 @@ class RepoMapApp:
                 file_data.get("maintenance_flag", "Unknown"),
                 file_data.get("critical_dependencies", "{}"),
                 file_data.get("architectural_role", "Unknown"),
-                file_data.get("code_quality_score", 0),
                 file_data.get("refactoring_suggestions", "None"),
                 file_data.get("security_assessment", "None"),
             ),
