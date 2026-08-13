@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2] - 2026-08-13
+
+### Fixed
+- Skip file and directory symlinks before scanner sorting or classification, preventing outside-root source from entering a map and stopping cycle links from repeating traversal ([#9](https://github.com/cyanheads/repo-map/issues/9)).
+- Detect languages by exact canonical filename followed by longest matching suffix, restoring `.gitignore`, `.envrc`, `Dockerfile`, and compound `.tfstate.backup` mappings without changing ordinary extension handling ([#5](https://github.com/cyanheads/repo-map/issues/5)).
+
 ## [0.8.1] - 2026-08-13
 
 ### Added
