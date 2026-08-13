@@ -21,7 +21,6 @@ def format_tree_lines(structure: list[dict[str, Any]]) -> Generator[str, None, N
                     parent_index = k
                     break
             if parent_index != -1:
-                is_parent_last = True
                 for j in range(parent_index + 1, len(structure)):
                     if structure[j]["level"] == level - 1:
                         is_parent_last = False

@@ -124,30 +124,27 @@ async def get_llm_descriptions(
         {"role": "user", "content": _build_user_prompt(structure, file)},
     ]
 
-    retries = 0
-    while retries < max_retries:
+    for retry_count in range(max_retries):
         try:
             response = await rate_limited_api_call(messages, model, 0.0)
         except aiohttp.ClientError as exc:
-            retry_after = 5 * (2**retries)
+            retry_after = 5 * (2**retry_count)
             logger.warning(
                 "Error communicating with OpenRouter LLM: %s. Retrying after %s seconds...",
                 exc,
                 retry_after,
             )
             await asyncio.sleep(retry_after)
-            retries += 1
             continue
 
         if "error" in response:
             if response["error"].get("code") == 429:
-                retry_after = response["error"].get("retry_after", 5) * (2**retries)
+                retry_after = response["error"].get("retry_after", 5) * (2**retry_count)
                 logger.warning(
                     "Rate limit exceeded. Retrying after %s seconds...",
                     retry_after,
                 )
                 await asyncio.sleep(retry_after)
-                retries += 1
                 continue
             logger.error("Error from OpenRouter LLM: %s", response["error"])
             return

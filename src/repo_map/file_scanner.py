@@ -159,13 +159,16 @@ def summarize_repo(
 
     def _scan(current_path: str, level: int) -> None:
         try:
-            entries = sorted(os.listdir(current_path))
+            entries = os.listdir(current_path)
         except OSError as exc:
             logger.warning("Cannot read directory %s: %s", current_path, exc)
             return
 
         entries.sort(
-            key=lambda entry: not os.path.isdir(os.path.join(current_path, entry))
+            key=lambda entry: (
+                not os.path.isdir(os.path.join(current_path, entry)),
+                entry,
+            )
         )
 
         for name in entries:

@@ -30,9 +30,11 @@ def get_python_structure(
         elif isinstance(node, ast.FunctionDef):
             functions.append(node.name)
         elif isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id.isupper():
-                    constants.append(target.id)
+            constants.extend(
+                target.id
+                for target in node.targets
+                if isinstance(target, ast.Name) and target.id.isupper()
+            )
 
     return classes, functions, constants
 
@@ -198,7 +200,6 @@ def get_imports(file_path: str, language: str) -> list[str]:
                 imports.extend(f"{module}.{alias.name}" for alias in node.names)
         return imports
 
-    imports = []
     import_patterns = {
         "Java": re.compile(r"import\s+([\w\.]+);"),
         "JavaScript": re.compile(r"import\s+.*?\s+from\s+['\"]([\w./]+)['\"];"),
