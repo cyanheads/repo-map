@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.3] - 2026-08-13
+
+### Fixed
+- Schedule eligible file analyses together and consume them in completion order, while preserving the configured request bound and updating each matching cache entry once ([#7](https://github.com/cyanheads/repo-map/issues/7)).
+- Return HTTP 429 retry metadata from each transport attempt and perform bounded backoff only after releasing the concurrency permit, with safe `Retry-After` fallback handling and no delay after the final attempt ([#8](https://github.com/cyanheads/repo-map/issues/8)).
+
 ## [0.8.2] - 2026-08-13
 
 ### Fixed
