@@ -1,6 +1,7 @@
 """CLI handler for the repo-map tool."""
 
 import argparse
+import asyncio
 import json
 import logging
 import os
@@ -104,10 +105,17 @@ class RepoMapApp:
             logger.info("No new or modified files to enhance. All up to date.")
             return
 
-        for file in tqdm(tasks, desc="Enhancing files", ncols=100):
-            tqdm.write(f"Processing: {file['name']}")
-            await get_llm_descriptions(structure, file, model=model_name)
-            self._update_cache_for_file(file)
+        async def enhance_file(file_data: dict[str, Any]) -> dict[str, Any]:
+            await get_llm_descriptions(structure, file_data, model=model_name)
+            return file_data
+
+        pending = [asyncio.create_task(enhance_file(file)) for file in tasks]
+        with tqdm(total=len(pending), desc="Enhancing files", ncols=100) as progress:
+            for completed in asyncio.as_completed(pending):
+                file = await completed
+                tqdm.write(f"Processed: {file['name']}")
+                self._update_cache_for_file(file)
+                progress.update()
 
     def _get_files_to_process(self, structure: list[dict[str, Any]]) -> set[str]:
         """Determine which files need LLM enhancement based on cache state."""

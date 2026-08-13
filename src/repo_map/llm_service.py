@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import math
 import os
 import ssl
 from typing import Any
@@ -139,6 +140,8 @@ async def get_llm_descriptions(
 
         if "error" in response:
             if response["error"].get("code") == 429:
+                if retry_count == max_retries - 1:
+                    break
                 retry_after = response["error"].get("retry_after", 5) * (2**retry_count)
                 logger.warning(
                     "Rate limit exceeded. Retrying after %s seconds...",
@@ -331,14 +334,12 @@ async def rate_limited_api_call(
                             response
                         )
                         if rate_limited:
-                            logger.warning(
-                                "Rate limited by API. Retrying after %s seconds...",
-                                retry_after,
-                            )
-                            await asyncio.sleep(retry_after)
-                            return await rate_limited_api_call(
-                                messages, model, temperature
-                            )
+                            return {
+                                "error": {
+                                    "code": 429,
+                                    "retry_after": retry_after,
+                                }
+                            }
                         response_text = await response.text()
                         logger.error(
                             "API request failed with status %s: %s",
@@ -355,16 +356,14 @@ async def rate_limited_api_call(
             raise
 
 
-async def handle_rate_limiting_async(response) -> tuple[bool, int]:
+async def handle_rate_limiting_async(response) -> tuple[bool, float]:
     """Determine whether a response indicates rate limiting and the retry delay."""
     if response.status == 429:
-        retry_after = response.headers.get("Retry-After")
-        if retry_after:
-            try:
-                retry_after = int(retry_after)
-            except ValueError:
-                retry_after = 5
-        else:
-            retry_after = 5
+        try:
+            retry_after = float(response.headers.get("Retry-After", ""))
+        except ValueError:
+            retry_after = 5.0
+        if retry_after < 0 or not math.isfinite(retry_after):
+            retry_after = 5.0
         return True, retry_after
-    return False, 0
+    return False, 0.0
