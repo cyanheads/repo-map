@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-08-13
+
+### Added
+- A 25-test baseline suite covering the cache, CLI orchestration, parsers, scanner, LLM service, report generation, and development commands. Eight strict expected-failure regressions track open issues #5–#12 and make unexpected passes release blockers.
+- Project-local maintenance, simplification, issue-reporting, and release workflows with synchronized Claude and Codex mirrors.
+- Structured GitHub bug and feature request forms.
+
+### Changed
+- Repaired `scripts.py` as the development-command dispatcher for checks, formatting, tests, skill synchronization, and skill discovery; `poetry run python scripts.py check` is now the complete local gate.
+- Updated direct dependencies: aiohttp 3.13.5 → 3.14.3, certifi 2026.4.22 → 2026.7.22, pathspec 1.1.0 → 1.1.1, pydantic 2.13.3 → 2.13.4, pydantic-settings 2.14.0 → 2.15.0, tqdm 4.67.3 → 4.70.0, black 26.3.1 → 26.5.1, pytest 9.0.3 → 9.1.1, and ruff 0.15.12 → 0.16.3.
+- Simplified parser, scanner, retry-loop, and report-tree internals without changing behavior.
+- Refreshed contributor guidance, command documentation, and examples against the verified project layout and release process.
+
+### Removed
+- Unused `tree-sitter`, `tree-sitter-languages`, and `types-tqdm` dependencies. repo-map's parsers use Python's AST and language-specific regex extraction, so the former tree-sitter ABI blocker does not require a migration.
+
 ## [0.8.0] - 2026-04-25
 
 ### Changed
