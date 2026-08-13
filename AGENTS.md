@@ -70,10 +70,12 @@ The OpenRouter request sets `response_format: {"type": "json_object"}` to enforc
 - `hash` column stores SHA-256 of each processed file; updating source without deleting cache still reprocesses because hashes change.
 
 ## Developer Workflows
-- Activate virtualenv (if Poetry manages one): `poetry shell`.
-- Formatting: `poetry run black src` (also exposed via `poetry run format`).
-- Linting: `poetry run ruff check src`.
-- Tests: add under `tests/` and run `poetry run pytest` (pytest already bundled).
+- Install/update the Poetry environment: `poetry install`.
+- Full local gate: `poetry run python scripts.py check` (skill sync, Ruff, Black, pytest with assertions enabled, Poetry metadata).
+- Formatting: `poetry run python scripts.py format`.
+- Focused lint/test commands: `poetry run python scripts.py lint` and `poetry run python scripts.py test`.
+- Build distributions: `poetry build`.
+- Discover project workflows: `poetry run python scripts.py list-skills`.
 - Type hints: project exposes `py.typed`; ensure new modules remain typed to support consumers.
 
 ## Extending repo-map

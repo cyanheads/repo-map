@@ -12,10 +12,11 @@ Behavior:
   * Missing file in mirror → copied
   * Content drift → overwritten
   * File only in mirror → left alone (probably a general-purpose skill)
-  * Exit 0 always; this is a best-effort sync, not a gate
+  * Exit 0 when every mirror is synchronized; file errors fail loudly
 
 Run via ``poetry run sync-skills`` or ``python3 scripts/sync_skills.py``.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -58,7 +59,9 @@ def sync_to(mirror: Path, files: list[Path]) -> tuple[int, int]:
 
 def main() -> int:
     if not SKILLS_DIR.is_dir():
-        print(f"sync-skills: no {SKILLS_DIR.relative_to(ROOT)}/ directory; nothing to do.")
+        print(
+            f"sync-skills: no {SKILLS_DIR.relative_to(ROOT)}/ directory; nothing to do."
+        )
         return 0
 
     files = walk_files(SKILLS_DIR)
@@ -73,10 +76,14 @@ def main() -> int:
         total_added += added
         total_changed += changed
         if added or changed:
-            print(f"sync-skills: {mirror.relative_to(ROOT)} → +{added} added, ~{changed} changed")
+            print(
+                f"sync-skills: {mirror.relative_to(ROOT)} → +{added} added, ~{changed} changed"
+            )
 
     if total_added == 0 and total_changed == 0:
-        print(f"sync-skills: {len(files)} file(s) already in sync across {len(MIRRORS)} mirror(s).")
+        print(
+            f"sync-skills: {len(files)} file(s) already in sync across {len(MIRRORS)} mirror(s)."
+        )
 
     return 0
 

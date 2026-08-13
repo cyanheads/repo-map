@@ -1,0 +1,76 @@
+name: Bug Report
+description: Report incorrect behavior in repo-map
+labels: ["bug"]
+assignees: ["cyanheads"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug.
+
+        **Do not include source code, credentials, API keys, tokens, PII, private repository names, or internal paths that should not be public.** Reduce repository-specific failures to a minimal public reproduction before submitting.
+
+  - type: input
+    id: version
+    attributes:
+      label: repo-map version
+      placeholder: "0.8.0"
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: "Python 3.12.x"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 15.x / Ubuntu 24.04 / Windows 11"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide a minimal public repository layout, files, and command that reproduce the behavior.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include redacted output or stack traces when useful.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Model name, concurrency setting, cache state, or related issues.
+    validations:
+      required: false

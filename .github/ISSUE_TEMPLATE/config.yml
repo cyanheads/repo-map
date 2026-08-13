@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: OpenRouter support
+    url: https://openrouter.ai/support
+    about: Use OpenRouter support for account, billing, and provider availability problems that do not reproduce in repo-map.

@@ -1,0 +1,242 @@
+"""Executable reproductions for accepted, tracked repo-map defects."""
+
+import asyncio
+import os
+
+import pytest
+
+import repo_map.cli_handler as cli_module
+import repo_map.llm_service as llm_module
+from repo_map.cache_manager import load_cache
+from repo_map.cli_handler import RepoMapApp
+from repo_map.code_parser import get_structure
+from repo_map.file_scanner import summarize_repo
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="https://github.com/cyanheads/repo-map/issues/10",
+)
+def test_analysis_prompt_includes_target_source(tmp_path) -> None:
+    source = "UNIQUE_SOURCE_SENTINEL_7E1C"
+    source_path = tmp_path / "module.py"
+    source_path.write_text(source, encoding="utf-8")
+    file_data = {
+        "path": str(source_path),
+        "name": "module.py",
+        "level": 0,
+        "type": "file",
+        "language": "Python",
+        "imports": ["os"],
+        "functions": ["run"],
+        "source": source,
+    }
+
+    assert source in llm_module._build_user_prompt([file_data], file_data)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="https://github.com/cyanheads/repo-map/issues/7",
+)
+def test_enhancement_uses_configured_concurrency(monkeypatch) -> None:
+    active = 0
+    peak = 0
+
+    async def fake_description(structure, file_data, model) -> None:
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+
+    app = RepoMapApp()
+    monkeypatch.setattr(
+        app,
+        "_get_files_to_process",
+        lambda structure: {item["path"] for item in structure},
+    )
+    monkeypatch.setattr(app, "_update_cache_for_file", lambda file_data: None)
+    monkeypatch.setattr(cli_module, "get_llm_descriptions", fake_description)
+    structure = [
+        {
+            "path": f"/tmp/{index}.py",
+            "name": f"{index}.py",
+            "type": "file",
+            "imports": ["os"],
+            "functions": [],
+        }
+        for index in range(4)
+    ]
+
+    asyncio.run(app._enhance_summary_with_llm(structure, "test-model"))
+
+    assert peak > 1
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="https://github.com/cyanheads/repo-map/issues/8",
+)
+def test_http_429_retry_does_not_deadlock(monkeypatch) -> None:
+    call_count = 0
+
+    class Response:
+        def __init__(self, status: int) -> None:
+            self.status = status
+            self.headers = {"Retry-After": "0"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def json(self) -> dict:
+            return {"choices": []}
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        def post(self, *args, **kwargs) -> Response:
+            nonlocal call_count
+            call_count += 1
+            return Response(429 if call_count == 1 else 200)
+
+    monkeypatch.setattr(llm_module.aiohttp, "ClientSession", Session)
+    monkeypatch.setattr(llm_module, "rate_limiter", llm_module.APIRateLimiter(1))
+
+    async def call_with_deadline() -> None:
+        try:
+            result = await asyncio.wait_for(
+                llm_module.rate_limited_api_call([], "test-model", 0.0),
+                timeout=0.05,
+            )
+        except TimeoutError:
+            pytest.fail("HTTP 429 retry deadlocked while holding the semaphore")
+        assert result == {"choices": []}
+
+    asyncio.run(call_with_deadline())
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="https://github.com/cyanheads/repo-map/issues/6",
+)
+def test_unsuccessful_analysis_remains_pending(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "module.py"
+    source.write_text("import os\n", encoding="utf-8")
+    connection = load_cache(str(tmp_path))
+    structure = summarize_repo(str(tmp_path), connection)
+    app = RepoMapApp()
+    app.cache_conn = connection
+
+    async def failed_analysis(structure, file_data, model) -> None:
+        return None
+
+    monkeypatch.setattr(cli_module, "get_llm_descriptions", failed_analysis)
+    asyncio.run(app._enhance_summary_with_llm(structure, "test-model"))
+
+    pending = app._get_files_to_process(summarize_repo(str(tmp_path), connection))
+    connection.close()
+
+    assert str(source) in pending
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="https://github.com/cyanheads/repo-map/issues/9",
+)
+def test_scanner_does_not_follow_directory_symlinks(tmp_path) -> None:
+    repository = tmp_path / "repository"
+    outside = tmp_path / "outside"
+    repository.mkdir()
+    outside.mkdir()
+    (outside / "external.py").write_text("VALUE = 1\n", encoding="utf-8")
+    os.symlink(outside, repository / "linked")
+    connection = load_cache(str(repository))
+
+    paths = [item["path"] for item in summarize_repo(str(repository), connection)]
+    connection.close()
+
+    assert not any(path.endswith("linked/external.py") for path in paths)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="https://github.com/cyanheads/repo-map/issues/11",
+)
+def test_class_only_and_data_files_are_eligible_for_enrichment(tmp_path) -> None:
+    connection = load_cache(str(tmp_path))
+    app = RepoMapApp()
+    app.cache_conn = connection
+    structure = [
+        {
+            "path": str(tmp_path / "class_only.py"),
+            "type": "file",
+            "classes": {"Only": []},
+            "imports": [],
+            "functions": [],
+            "hash": "x",
+        },
+        {
+            "path": str(tmp_path / "config.json"),
+            "type": "file",
+            "imports": [],
+            "functions": [],
+            "hash": "y",
+        },
+    ]
+
+    pending = app._get_files_to_process(structure)
+    connection.close()
+
+    assert pending == {item["path"] for item in structure}
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="https://github.com/cyanheads/repo-map/issues/5",
+)
+def test_declared_filename_mappings_are_reachable(tmp_path) -> None:
+    names = [".gitignore", ".envrc", "main.tfstate.backup", "Dockerfile"]
+    for name in names:
+        (tmp_path / name).write_text("content\n", encoding="utf-8")
+    connection = load_cache(str(tmp_path))
+
+    detected = {
+        item["name"]: item.get("language")
+        for item in summarize_repo(str(tmp_path), connection)
+        if item["name"] in names
+    }
+    connection.close()
+
+    assert set(detected) == set(names)
+    assert all(detected.values())
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="https://github.com/cyanheads/repo-map/issues/12",
+)
+def test_parser_preserves_async_and_javascript_scope(tmp_path) -> None:
+    python_source = tmp_path / "sample.py"
+    python_source.write_text("async def run():\n    pass\n", encoding="utf-8")
+    javascript_source = tmp_path / "sample.js"
+    javascript_source.write_text(
+        "class A {\n  method() {}\n}\nfunction outside() {}\n",
+        encoding="utf-8",
+    )
+
+    _, python_functions, _ = get_structure(str(python_source), "Python")
+    javascript_classes, javascript_functions, _ = get_structure(
+        str(javascript_source), "JavaScript"
+    )
+
+    assert python_functions == ["run"]
+    assert javascript_classes == {"A": ["method"]}
+    assert javascript_functions == ["outside"]

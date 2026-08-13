@@ -1,87 +1,70 @@
-# Python Poetry Cheatsheet
+# repo-map Poetry commands
 
-### Create a new project
-```
-poetry new <project-name>
-```
+## Environment
 
-### Add a new lib
-```
-poetry add <library>
-```
+Install the locked dependencies and local CLI entry points:
 
-### Remove a lib
-```
-poetry remove <library>
-```
-
-### Update a lib
-```
-poetry update <library>
-```
-
-### Get venv path
-```
-poetry run which python
-```
-
-### Run app
-```
-poetry run python app.py
-```
-
-### Run tests
-```
-poetry run python -m unittest discover
-```
-
-### Create script
-
-1 - Edit `pyproject.toml`:
-```
-[tool.poetry.scripts]
-test = 'scripts:test'
-```
-
-2 - Create a `scripts.py` file on the root directory of your project:
-```python
-import subprocess
-
-def test():
-    """
-    Run all unittests. Equivalent to:
-    `poetry run python -u -m unittest discover`
-    """
-    subprocess.run(
-        ['python', '-u', '-m', 'unittest', 'discover']
-    )
-```
-
-3 - Run script:
-```
-poetry run test
-```
-
-### Disable virtual environment creation
-```
-poetry config virtualenvs.create false
-```
-
-### List configuration
-```
-poetry config --list
-```
-
-### Activate virtual environment
-```
-poetry shell
-```
-
-### Install dependencies
-```
+```bash
 poetry install
 ```
 
-### Show dependencies
+Inspect the active environment:
+
+```bash
+poetry env info
+poetry run python --version
 ```
-poetry show
+
+## Development gates
+
+Run the complete local gate:
+
+```bash
+poetry run python scripts.py check
+```
+
+Run individual lanes:
+
+```bash
+poetry run python scripts.py lint
+poetry run python scripts.py test
+poetry run python scripts.py format
+```
+
+Build the wheel and source distribution:
+
+```bash
+poetry build
+```
+
+## CLI
+
+```bash
+poetry run repo-map /path/to/repository
+poetry run repo-map /path/to/repository --model anthropic/claude-sonnet-4.6 --concurrency 3 -y
+```
+
+## Dependencies
+
+Add or remove a dependency:
+
+```bash
+poetry add <package>
+poetry remove <package>
+```
+
+Review and apply compatible updates:
+
+```bash
+poetry show --outdated
+poetry update
+```
+
+Follow [`skills/maintenance/SKILL.md`](../skills/maintenance/SKILL.md) for dependency review and verification.
+
+## Project workflows
+
+```bash
+poetry run python scripts.py list-skills
+poetry run python scripts.py sync-skills
+```

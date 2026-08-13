@@ -35,7 +35,7 @@ Both modes converge at Step 3 and end at Step 8.
 poetry show --outdated
 ```
 
-Columns are `name | current | latest | description`. Note which jumps cross majors — Poetry's caret constraints (`^1.2.3`) cap at the next major and **`poetry update` will not cross them**. For pre-1.0 packages a minor bump is effectively a major (e.g. `tree-sitter ^0.21 → 0.25` requires editing the constraint).
+Columns are `name | current | latest | description`. Note which jumps cross majors — Poetry's caret constraints (`^1.2.3`) cap at the next major and **`poetry update` will not cross them**. For pre-1.0 packages, a minor bump is effectively a major and requires editing the constraint.
 
 ### 2. Apply the update (Mode A only)
 
@@ -67,10 +67,9 @@ The packages that matter for repo-map:
 | Package | Used In | Why It Matters |
 |:--------|:--------|:---------------|
 | `aiohttp` | `llm_service.py` | OpenRouter HTTP client; session/timeout/retry semantics |
-| `pydantic` / `pydantic-settings` | `config.py`, `models.py` | Settings + data models; v2.x is iterating fast |
-| `tree-sitter` / `tree-sitter-languages` | `code_parser.py` | Parser API has had breaking changes pre-1.0 |
+| `pydantic` / `pydantic-settings` | `config.py` | Settings loading and validation; v2.x is iterating fast |
 | `pathspec` | `file_scanner.py` | `.gitignore` matching |
-| `tqdm` | `main.py`, `logging_utils.py` | Progress bars + logging handler |
+| `tqdm` | `cli_handler.py`, `logging_utils.py` | Progress bars + logging handler |
 | `certifi` | `llm_service.py` | TLS bundle; new releases just refresh certs |
 | `ruff` / `black` / `pytest` | dev tooling | New rules / format diffs / test runner changes |
 
@@ -81,19 +80,18 @@ Apply findings from Step 3. Defaults are cost/benefit — there's no upstream fr
 - **Breaking changes** — fix call sites. Not optional.
 - **Deprecation warnings** — migrate now, while context is fresh. Don't silence.
 - **New `ruff` rules** that flag existing code — fix the code; don't add ignores.
-- **`black` format drift** — run `poetry run black src` and commit the reformat as a separate concern from code changes if the diff is large.
+- **`black` format drift** — run `poetry run python scripts.py format` and commit the reformat as a separate concern from code changes if the diff is large.
 - **New library APIs that supersede local helper code** — swap them in if it's a clear win (smaller surface, removed dep, fewer bugs). Skip if marginal.
 - **New features that don't match existing call sites** — note for later, don't refactor speculatively.
 
 ### 5. Verify
 
 ```bash
-poetry run ruff check src
-poetry run black --check src
-poetry run pytest
+poetry run python scripts.py check
+poetry build
 ```
 
-`pytest` will pass trivially if no tests exist yet — that's expected for now. Smoke test the actual tool against a small sample repo to catch runtime regressions the linters won't:
+The test suite includes strict expected-failure reproductions linked to open issues; an unexpected pass is a gate failure until the implementation and issue state are reconciled. Smoke test the actual tool against a small public repository to catch runtime regressions the local tests cannot:
 
 ```bash
 poetry run repo-map /path/to/small/repo -y
@@ -108,7 +106,7 @@ Watch for new exceptions, broken parsing, or LLM call failures. Fix anything tha
 A Claude Code `PostToolUse` hook (in `.claude/settings.json`) runs the sync automatically after any Write/Edit/MultiEdit under `skills/`. If you authored skills outside Claude Code, or want to be sure, run it manually:
 
 ```bash
-poetry run sync-skills
+poetry run python scripts.py sync-skills
 # or, no Poetry:
 python3 scripts/sync_skills.py
 ```
@@ -144,11 +142,10 @@ Present a concise numbered summary to the user:
 - [ ] Update applied (`poetry update` or constraint edit + `poetry update <pkg>`) — Mode A, or already done by user — Mode B
 - [ ] Per-package changelog investigation done (via `changelog` skill or manually)
 - [ ] Adoption opportunities identified and applied
-- [ ] `poetry run ruff check src` clean
-- [ ] `poetry run black --check src` clean
-- [ ] `poetry run pytest` passes
+- [ ] `poetry run python scripts.py check` passes
+- [ ] `poetry build` succeeds
 - [ ] Smoke test against a sample repo passes
-- [ ] `skills/` mirrors in sync (auto via hook, or `poetry run sync-skills`)
+- [ ] `skills/` mirrors in sync (handled by the project check, or run `poetry run python scripts.py sync-skills` directly)
 - [ ] `CHANGELOG.md` entry added with concrete version + date
 - [ ] `pyproject.toml` version bumped
 - [ ] `AGENTS.md` / `CLAUDE.md` / `README.md` updated if behavior or commands changed

@@ -1,0 +1,36 @@
+name: Feature Request
+description: Suggest an improvement to repo-map
+labels: ["enhancement"]
+assignees: ["cyanheads"]
+body:
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: What repository-analysis problem does this solve, and who benefits?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the user-visible behavior or API, with an example when useful.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What did you try instead, and why did it fall short?
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Prior art, related issues, or representative repository shapes.
+    validations:
+      required: false

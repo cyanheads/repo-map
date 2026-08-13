@@ -1,19 +1,16 @@
 ## Example Generated Output For repo-map
 
 Generated:
-```md
+````markdown
 # Repository Map
 
 ```markdown
-/ (.)
-├── .cache/
-├── .git/
+/ (repo-map)
 ├── docs/
     └── poetry_cheatsheet.md (Markdown)
 ├── examples/
 ├── src/
     └── repo_map/
-    │   ├── __pycache__/
     │   ├── cache_manager.py (Python)
     │   │   ├── Description: Manages the persistent SQLite cache for storing and retrieving expensive Language Model (LLM) response data.
     │   │   ├── Developer Consideration: The cache uses a simple key-value structure; ensure the cache key (prompt/input) is deterministic and unique for reliable lookups.
@@ -95,13 +92,12 @@ Generated:
 ├── poetry.lock (None)
 ├── pyproject.toml (None)
 └── scripts.py (Python)
-    ├── Description: Utility module containing helper scripts, primarily for running code formatting and linting tools via subprocess calls.
-    ├── Developer Consideration: The `run_format` function executes external tools (Black, isort) directly; ensure these tools are installed and accessible in the execution environment.
+    ├── Description: Dispatches local development commands for formatting, linting, tests, the complete project gate, skill discovery, and skill synchronization.
+    ├── Developer Consideration: `run_tests` removes `PYTHONOPTIMIZE` from the child process so pytest assertions remain enabled.
     ├── Maintenance Flag: Stable
     ├── Architectural Role: Tooling
-    ├── Refactoring Suggestions: Consider using a dedicated task runner (like Invoke or Poetry scripts) instead of raw Python subprocess calls for better cross-platform compatibility.
     ├── Critical Dependencies:
-    └──   - subprocess: Essential for executing external shell commands like Black and isort for code formatting.
+    └──   - subprocess: Runs Ruff, Black, pytest, Poetry metadata checks, and skill synchronization.
 └────────────── 
 ```
-```
+````

@@ -28,20 +28,24 @@ poetry run repo-map /path/to/repo --model "anthropic/claude-sonnet-4.6" --concur
 
 ### Development
 ```bash
-# Format code (Black)
-poetry run format
-# or
-poetry run black src
+# Full local gate: Ruff, Black, pytest, and Poetry metadata
+poetry run python scripts.py check
 
-# Lint code (Ruff)
-poetry run ruff check src
+# Format all project Python
+poetry run python scripts.py format
 
-# Run tests (if/when added)
-poetry run pytest
+# Run tests with assertions enabled
+poetry run python scripts.py test
+
+# List project workflows
+poetry run python scripts.py list-skills
+
+# Build both distribution artifacts
+poetry build
 ```
 
 ### Testing During Development
-Since there are no tests yet, test changes by running the tool on a sample repository:
+The test suite covers the cache, CLI helpers, parsers, scanner, LLM response handling, report generation, and development commands. For changes to live OpenRouter behavior, also run the tool against a small public fixture:
 ```bash
 poetry run repo-map /path/to/test/repo -y
 ```
@@ -51,7 +55,7 @@ poetry run repo-map /path/to/test/repo -y
 ### Core Pipeline
 1. **CLI Entry** ([cli_handler.py](src/repo_map/cli_handler.py)) → Parses arguments, validates API key, initializes cache
 2. **File Scanning** ([file_scanner.py](src/repo_map/file_scanner.py)) → Walks directory tree, respects `.gitignore`, computes file hashes
-3. **Code Parsing** ([code_parser.py](src/repo_map/code_parser.py)) → Extracts imports, classes, functions, and docstrings using tree-sitter
+3. **Code Parsing** ([code_parser.py](src/repo_map/code_parser.py)) → Extracts Python structure with `ast` and Java, JavaScript, TypeScript, and C# structure with targeted regular expressions
 4. **LLM Enhancement** ([llm_service.py](src/repo_map/llm_service.py)) → Sends file metadata to OpenRouter API with concurrency control
 5. **Report Generation** ([report_generator.py](src/repo_map/report_generator.py)) → Produces tree visualization and Markdown output
 
@@ -98,7 +102,7 @@ The request sets `response_format: {"type": "json_object"}` to enforce structure
 
 1. Add extension mappings to `SUPPORTED_LANGUAGES` in [models.py](src/repo_map/models.py)
 2. Implement parsing logic in [code_parser.py](src/repo_map/code_parser.py)
-3. tree-sitter grammars are available via `tree-sitter-languages` package
+3. Add parser and scanner tests for filenames, imports, symbols, and lexical scope
 
 ## Output
 
@@ -109,7 +113,7 @@ The request sets `response_format: {"type": "json_object"}` to enforce structure
 ## Important Notes
 
 - Python 3.12+ required
-- Uses `tree-sitter` for parsing (not AST), enabling multi-language support
+- Python uses the standard-library AST; other structured languages currently use lightweight regular-expression extractors
 - Async architecture with `aiohttp` for API calls
 - Type hints throughout - `py.typed` marker present for downstream consumers
 - Exponential backoff handles rate limits automatically
