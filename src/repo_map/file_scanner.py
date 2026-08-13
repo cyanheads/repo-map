@@ -14,6 +14,13 @@ from repo_map.models import SUPPORTED_LANGUAGES
 
 logger = logging.getLogger(__name__)
 
+_LANGUAGE_SUFFIXES = tuple(
+    sorted(
+        (key for key in SUPPORTED_LANGUAGES if key.startswith(".")),
+        key=lambda suffix: (-len(suffix), suffix),
+    )
+)
+
 DEFAULT_IGNORE_PATTERNS = [
     ".git/",
     ".hg/",
@@ -77,12 +84,23 @@ def compute_file_hash(file_path: str) -> str:
         return ""
 
 
+def _detect_language(file_path: str) -> str | None:
+    """Detect a language by exact basename, then longest matching suffix."""
+    basename = os.path.basename(file_path).lower()
+    if language := SUPPORTED_LANGUAGES.get(basename):
+        return language
+
+    for suffix in _LANGUAGE_SUFFIXES:
+        if basename.endswith(suffix):
+            return SUPPORTED_LANGUAGES[suffix]
+    return None
+
+
 def _process_file(
     full_path: str, level: int, cache_conn: sqlite3.Connection
 ) -> dict[str, Any]:
     """Return metadata for a single file, preferring cached data."""
-    _, ext = os.path.splitext(full_path)
-    language = SUPPORTED_LANGUAGES.get(ext.lower())
+    language = _detect_language(full_path)
 
     file_info: dict[str, Any] = {
         "name": os.path.basename(full_path),
@@ -159,36 +177,37 @@ def summarize_repo(
 
     def _scan(current_path: str, level: int) -> None:
         try:
-            entries = os.listdir(current_path)
+            with os.scandir(current_path) as directory:
+                entries = [entry for entry in directory if not entry.is_symlink()]
         except OSError as exc:
             logger.warning("Cannot read directory %s: %s", current_path, exc)
             return
 
         entries.sort(
             key=lambda entry: (
-                not os.path.isdir(os.path.join(current_path, entry)),
-                entry,
+                not entry.is_dir(follow_symlinks=False),
+                entry.name,
             )
         )
 
-        for name in entries:
-            full_path = os.path.join(current_path, name)
+        for entry in entries:
+            full_path = entry.path
             relative_path = os.path.relpath(full_path, abs_root_dir)
 
             if ignore_spec.match_file(relative_path):
                 continue
 
-            if os.path.isdir(full_path):
+            if entry.is_dir(follow_symlinks=False):
                 summary.append(
                     {
-                        "name": name,
+                        "name": entry.name,
                         "path": full_path,
                         "level": level,
                         "type": "directory",
                     }
                 )
                 _scan(full_path, level + 1)
-            elif os.path.isfile(full_path):
+            elif entry.is_file(follow_symlinks=False):
                 summary.append(_process_file(full_path, level, cache_conn))
 
     _scan(abs_root_dir, 0)

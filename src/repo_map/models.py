@@ -1,6 +1,7 @@
 """Data models for the application, including supported languages."""
 
 SUPPORTED_LANGUAGES = {
+    "dockerfile": "Docker",
     ".py": "Python",
     ".java": "Java",
     ".js": "JavaScript",

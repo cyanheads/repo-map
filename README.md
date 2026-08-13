@@ -17,6 +17,7 @@ repo-map scans a repository, extracts structural metadata, and asks an OpenRoute
 - Python AST extraction plus lightweight Java, JavaScript, TypeScript, and C# structure parsing
 - Structured descriptions, developer considerations, maintenance flags, dependency notes, architectural roles, refactoring suggestions, and security assessments
 - Root `.gitignore` support plus built-in exclusions for caches, dependencies, build output, and repo-map artifacts
+- Symlink-safe traversal that does not follow linked files or directories
 - SHA-256-based SQLite cache for unchanged files
 
 See [`examples/example.md`](examples/example.md) for a full sample report.

@@ -1,7 +1,6 @@
 """Executable reproductions for accepted, tracked repo-map defects."""
 
 import asyncio
-import os
 
 import pytest
 
@@ -149,25 +148,6 @@ def test_unsuccessful_analysis_remains_pending(tmp_path, monkeypatch) -> None:
 
 @pytest.mark.xfail(
     strict=True,
-    reason="https://github.com/cyanheads/repo-map/issues/9",
-)
-def test_scanner_does_not_follow_directory_symlinks(tmp_path) -> None:
-    repository = tmp_path / "repository"
-    outside = tmp_path / "outside"
-    repository.mkdir()
-    outside.mkdir()
-    (outside / "external.py").write_text("VALUE = 1\n", encoding="utf-8")
-    os.symlink(outside, repository / "linked")
-    connection = load_cache(str(repository))
-
-    paths = [item["path"] for item in summarize_repo(str(repository), connection)]
-    connection.close()
-
-    assert not any(path.endswith("linked/external.py") for path in paths)
-
-
-@pytest.mark.xfail(
-    strict=True,
     reason="https://github.com/cyanheads/repo-map/issues/11",
 )
 def test_class_only_and_data_files_are_eligible_for_enrichment(tmp_path) -> None:
@@ -196,27 +176,6 @@ def test_class_only_and_data_files_are_eligible_for_enrichment(tmp_path) -> None
     connection.close()
 
     assert pending == {item["path"] for item in structure}
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="https://github.com/cyanheads/repo-map/issues/5",
-)
-def test_declared_filename_mappings_are_reachable(tmp_path) -> None:
-    names = [".gitignore", ".envrc", "main.tfstate.backup", "Dockerfile"]
-    for name in names:
-        (tmp_path / name).write_text("content\n", encoding="utf-8")
-    connection = load_cache(str(tmp_path))
-
-    detected = {
-        item["name"]: item.get("language")
-        for item in summarize_repo(str(tmp_path), connection)
-        if item["name"] in names
-    }
-    connection.close()
-
-    assert set(detected) == set(names)
-    assert all(detected.values())
 
 
 @pytest.mark.xfail(

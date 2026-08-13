@@ -34,6 +34,47 @@ def test_summarize_repo_orders_directories_first_and_honors_gitignore(
     assert "zeta.py" in names
 
 
+def test_summarize_repo_skips_file_and_directory_symlinks(tmp_path) -> None:
+    repository = tmp_path / "repository"
+    outside = tmp_path / "outside"
+    repository.mkdir()
+    outside.mkdir()
+    (outside / "external.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (repository / "alpha").mkdir()
+    (repository / "alpha" / "nested.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (repository / "zeta.py").write_text("VALUE = 3\n", encoding="utf-8")
+    (repository / "linked-directory").symlink_to(outside, target_is_directory=True)
+    (repository / "linked-file.py").symlink_to(outside / "external.py")
+    (repository / "alpha" / "cycle").symlink_to(repository, target_is_directory=True)
+    connection = load_cache(str(repository))
+
+    summary = summarize_repo(str(repository), connection)
+    connection.close()
+
+    assert [item["name"] for item in summary] == ["alpha", "nested.py", "zeta.py"]
+
+
+def test_summarize_repo_detects_exact_filenames_and_longest_suffixes(tmp_path) -> None:
+    expected = {
+        ".envrc": "Config",
+        ".gitignore": "Git",
+        "Dockerfile": "Docker",
+        "container.dockerfile": "Docker",
+        "main.py": "Python",
+        "main.tfstate.backup": "Terraform",
+    }
+    for name in [*expected, ".env"]:
+        (tmp_path / name).write_text("content\n", encoding="utf-8")
+    connection = load_cache(str(tmp_path))
+
+    summary = summarize_repo(str(tmp_path), connection)
+    connection.close()
+    detected = {item["name"]: item.get("language") for item in summary}
+
+    assert {name: detected[name] for name in expected} == expected
+    assert ".env" not in detected
+
+
 def test_summarize_repo_reuses_matching_cache_entry(tmp_path) -> None:
     source = tmp_path / "sample.py"
     source.write_text("def run():\n    pass\n", encoding="utf-8")
