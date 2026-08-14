@@ -2,8 +2,6 @@
 
 import asyncio
 
-import pytest
-
 import repo_map.cli_handler as cli_module
 import repo_map.llm_service as llm_module
 from repo_map.cache_manager import load_cache
@@ -72,10 +70,6 @@ def test_class_only_and_data_files_are_eligible_for_enrichment(tmp_path) -> None
     }
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="https://github.com/cyanheads/repo-map/issues/12",
-)
 def test_parser_preserves_async_and_javascript_scope(tmp_path) -> None:
     python_source = tmp_path / "sample.py"
     python_source.write_text("async def run():\n    pass\n", encoding="utf-8")
