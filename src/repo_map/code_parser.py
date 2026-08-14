@@ -223,31 +223,6 @@ def get_imports(file_path: str, language: str) -> list[str]:
     return imports
 
 
-def get_constants(file_path: str, language: str) -> list[str]:
-    """Extracts constants from a file based on its language."""
-    if language == "Python":
-        try:
-            with open(file_path, encoding="utf-8") as file:
-                tree = ast.parse(file.read())
-            return [
-                target.id
-                for node in ast.walk(tree)
-                if isinstance(node, ast.Assign)
-                for target in node.targets
-                if isinstance(target, ast.Name) and target.id.isupper()
-            ]
-        except (SyntaxError, OSError) as e:
-            logger.error("Error parsing constants from %s: %s", file_path, e)
-    elif language == "Java":
-        try:
-            with open(file_path, encoding="utf-8") as file:
-                content = file.read()
-            return re.findall(r"public\s+static\s+final\s+\w+\s+(\w+)\s*=", content)
-        except OSError as e:
-            logger.error("Error reading constants from %s: %s", file_path, e)
-    return []
-
-
 def get_structure(
     file_path: str, language: str
 ) -> tuple[dict[str, list[str]], list[str], list[str]]:
