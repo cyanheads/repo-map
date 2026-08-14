@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-08-13
+
+### Security
+- The OpenRouter endpoint and request headers are no longer read from `OPENROUTER_API_URL`, `HTTP_REFERER`, or `APP_NAME` in the environment or a `.env` file — they are fixed module constants. Previously, pydantic-settings resolved `env_file=".env"` against the process working directory, so a `.env` planted in an analyzed repository could redirect every request, carrying the real API key and each eligible file's full source, to an attacker-chosen host ([#17](https://github.com/cyanheads/repo-map/issues/17)).
+- The default exclusions now cover more credential-bearing formats: `.envrc`, `*.tfvars`, `*.tfstate`, `*.ini`, `*.conf`, `*.cfg`. Their complete text was previously eligible for upload to the LLM. A target repository that wants one of these documented can re-include it with a `.gitignore` negation, such as `!app.conf` ([#15](https://github.com/cyanheads/repo-map/issues/15)).
+
+### Fixed
+- Directory-only ignore patterns (e.g. `build/`) now prune the walk instead of emitting an empty node and scanning the subtree in full ([#14](https://github.com/cyanheads/repo-map/issues/14)).
+
 ## [0.9.1] - 2026-08-13
 
 ### Changed
