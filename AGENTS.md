@@ -81,7 +81,7 @@ The OpenRouter request sets `response_format: {"type": "json_object"}` to enforc
 ## Extending repo-map
 - Add new file types via `SUPPORTED_LANGUAGES` in `src/repo_map/models.py`, and add the language to `NON_TEXT_LANGUAGES` when the format is binary or media, so its bytes are never sent to OpenRouter.
 - Provide language-specific structure/import extraction by expanding switch logic in `src/repo_map/code_parser.py`.
-- Adjust concurrency or headers by modifying `Settings` defaults in `src/repo_map/config.py`.
+- Adjust concurrency by modifying `Settings` defaults in `src/repo_map/config.py`. The OpenRouter endpoint and request headers are module constants there (`OPENROUTER_API_URL`, `HTTP_REFERER`, `APP_NAME`), deliberately not settings — `env_file` resolves against the working directory, so a `.env` in an analyzed repository must not be able to reach them.
 - To persist additional metadata, alter both the cache schema (`cache_manager.py`) and tree serialization in `main.py`.
 
 ## Troubleshooting

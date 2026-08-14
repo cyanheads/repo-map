@@ -12,7 +12,7 @@ from typing import Any
 import aiohttp
 import certifi
 
-from repo_map.config import settings
+from repo_map.config import APP_NAME, HTTP_REFERER, OPENROUTER_API_URL, settings
 from repo_map.file_scanner import load_source_snapshot
 
 logger = logging.getLogger(__name__)
@@ -368,8 +368,8 @@ async def rate_limited_api_call(
     async with rate_limiter:
         headers = {
             "Authorization": f"Bearer {settings.openrouter_api_key}",
-            "HTTP-Referer": settings.http_referer,
-            "X-Title": settings.app_name,
+            "HTTP-Referer": HTTP_REFERER,
+            "X-Title": APP_NAME,
         }
         data = {
             "model": model,
@@ -380,7 +380,7 @@ async def rate_limited_api_call(
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    settings.openrouter_api_url,
+                    OPENROUTER_API_URL,
                     headers=headers,
                     json=data,
                     ssl=ssl_context,

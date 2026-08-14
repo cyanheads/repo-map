@@ -2,6 +2,16 @@
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Request transport values are constants, not settings. `env_file` resolves
+# against the process working directory, so a repository being analyzed could
+# otherwise plant a `.env` that redirects every request -- and the user's real
+# API key with it -- to an attacker-chosen host. Keeping the endpoint and
+# headers off `Settings` leaves nothing there for such a file to reach, while
+# the credential and tuning fields below still load as documented.
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+HTTP_REFERER = "https://github.com/cyanheads/repo-map"
+APP_NAME = "repo-map"
+
 
 class Settings(BaseSettings):
     """
@@ -10,9 +20,6 @@ class Settings(BaseSettings):
     Attributes:
         openrouter_api_key: The API key for OpenRouter.
         openrouter_model_name: The model name to be used with the OpenRouter API.
-        openrouter_api_url: The URL for the OpenRouter API.
-        http_referer: The HTTP referer to be used in API requests.
-        app_name: The name of the application.
         api_semaphore_limit: The concurrency limit for API calls.
     """
 
@@ -22,11 +29,6 @@ class Settings(BaseSettings):
 
     openrouter_api_key: str | None = None
     openrouter_model_name: str = "anthropic/claude-sonnet-4.6"
-    openrouter_api_url: str = "https://openrouter.ai/api/v1/chat/completions"
-
-    # For OpenRouter headers
-    http_referer: str = "https://github.com/cyanheads/repo-map"
-    app_name: str = "repo-map"
 
     # Concurrency limit for API calls
     api_semaphore_limit: int = 3
