@@ -429,3 +429,433 @@ export default class Service {}
     )
 
     assert get_imports(source, "TypeScript") == []
+
+
+def test_java_structure_reports_sequential_classes_separately(tmp_path) -> None:
+    source = _write(
+        tmp_path,
+        "Pair.java",
+        """public class First {
+    public void alpha() {}
+}
+
+public class Second {
+    public void beta() {}
+}
+""",
+    )
+
+    classes, functions, _ = get_structure(source, "Java")
+
+    assert classes == {"First": ["alpha"], "Second": ["beta"]}
+    assert functions == []
+
+
+def test_csharp_structure_reports_sequential_classes_separately(tmp_path) -> None:
+    source = _write(
+        tmp_path,
+        "Pair.cs",
+        """public class First
+{
+    public void Alpha() {}
+}
+
+public class Second
+{
+    public void Beta() {}
+}
+""",
+    )
+
+    classes, functions, _ = get_structure(source, "C#")
+
+    assert classes == {"First": ["Alpha"], "Second": ["Beta"]}
+    assert functions == []
+
+
+def test_structure_of_unreadable_file_is_empty(tmp_path) -> None:
+    missing = str(tmp_path / "absent.java")
+
+    assert get_structure(missing, "Java") == ({}, [], [])
+    assert get_structure(str(tmp_path / "absent.cs"), "C#") == ({}, [], [])
+    assert get_structure(str(tmp_path / "absent.js"), "JavaScript") == ({}, [], [])
+
+
+def test_structure_of_empty_file_is_empty(tmp_path) -> None:
+    assert get_structure(_write(tmp_path, "Empty.java", ""), "Java") == ({}, [], [])
+    assert get_structure(_write(tmp_path, "Empty.cs", ""), "C#") == ({}, [], [])
+    assert get_structure(_write(tmp_path, "empty.js", ""), "JavaScript") == ({}, [], [])
+
+
+def test_javascript_prose_in_line_comment_is_not_reported_as_class(tmp_path) -> None:
+    source = _write(
+        tmp_path,
+        "prose.js",
+        "// This helper is the class of thing we need.\nconst x = 1;\n",
+    )
+
+    classes, functions, constants = get_structure(source, "JavaScript")
+
+    assert classes == {}
+    assert functions == []
+    assert constants == ["x"]
+
+
+def test_javascript_commented_out_class_is_not_reported(tmp_path) -> None:
+    source = _write(
+        tmp_path,
+        "legacy.js",
+        """/*
+class Legacy {
+  gone() {}
+}
+*/
+function live() {}
+""",
+    )
+
+    classes, functions, _ = get_structure(source, "JavaScript")
+
+    assert classes == {}
+    assert functions == ["live"]
+
+
+def test_javascript_class_in_string_literal_is_not_reported(tmp_path) -> None:
+    source = _write(
+        tmp_path,
+        "literal.js",
+        'const label = "class Ghost {";\nfunction live() {}\n',
+    )
+
+    classes, functions, constants = get_structure(source, "JavaScript")
+
+    assert classes == {}
+    assert functions == ["live"]
+    assert constants == ["label"]
+
+
+def test_java_prose_in_comments_is_not_reported_as_class(tmp_path) -> None:
+    source = _write(
+        tmp_path,
+        "Prose.java",
+        """// This helper is the class of thing we need.
+/*
+public class Legacy {
+    public void gone() {}
+}
+*/
+public class Real {
+    public void alpha() {}
+}
+""",
+    )
+
+    classes, functions, _ = get_structure(source, "Java")
+
+    assert classes == {"Real": ["alpha"]}
+    assert functions == []
+
+
+def test_java_class_in_string_literal_is_not_reported(tmp_path) -> None:
+    source = _write(
+        tmp_path,
+        "Literal.java",
+        """public class Holder {
+    public static final String LABEL = "class Ghost";
+
+    public void alpha() {}
+}
+""",
+    )
+
+    classes, functions, constants = get_structure(source, "Java")
+
+    assert classes == {"Holder": ["alpha"]}
+    assert functions == []
+    assert constants == ["LABEL"]
+
+
+def test_csharp_prose_in_comments_is_not_reported_as_class(tmp_path) -> None:
+    source = _write(
+        tmp_path,
+        "Prose.cs",
+        """// This helper is the class of thing we need.
+/*
+public class Legacy
+{
+    public void Gone() {}
+}
+*/
+public class Real
+{
+    public void Alpha() {}
+}
+""",
+    )
+
+    classes, functions, _ = get_structure(source, "C#")
+
+    assert classes == {"Real": ["Alpha"]}
+    assert functions == []
+
+
+def test_csharp_class_in_string_literal_is_not_reported(tmp_path) -> None:
+    source = _write(
+        tmp_path,
+        "Literal.cs",
+        """public class Holder
+{
+    public const string LABEL = "class Ghost";
+
+    public void Alpha() {}
+}
+""",
+    )
+
+    classes, functions, constants = get_structure(source, "C#")
+
+    assert classes == {"Holder": ["Alpha"]}
+    assert functions == []
+    assert constants == ["LABEL"]
+
+
+def test_java_class_declaration_modifiers_and_generics_are_recognized(
+    tmp_path,
+) -> None:
+    source = _write(
+        tmp_path,
+        "Shape.java",
+        """public abstract class Shape<T extends Number> {
+    public abstract double area();
+}
+
+final class Circle extends Shape<Double> {
+    public double area() { return 0; }
+}
+""",
+    )
+
+    classes, functions, _ = get_structure(source, "Java")
+
+    assert classes == {"Shape": ["area"], "Circle": ["area"]}
+    assert functions == []
+
+
+def test_csharp_class_declaration_modifiers_and_generics_are_recognized(
+    tmp_path,
+) -> None:
+    source = _write(
+        tmp_path,
+        "Box.cs",
+        """namespace N
+{
+    internal sealed partial class Box<T>
+    {
+        public void Put(T item) {}
+    }
+
+    public static class Helpers
+    {
+        public static int Count() { return 0; }
+    }
+}
+""",
+    )
+
+    classes, functions, _ = get_structure(source, "C#")
+
+    assert classes == {"Box": ["Put"], "Helpers": ["Count"]}
+    assert functions == []
+
+
+def test_java_annotated_class_declaration_is_recognized(tmp_path) -> None:
+    source = _write(
+        tmp_path,
+        "Old.java",
+        """@Deprecated public class Old {
+    public void gone() {}
+}
+""",
+    )
+
+    classes, functions, _ = get_structure(source, "Java")
+
+    assert classes == {"Old": ["gone"]}
+    assert functions == []
+
+
+def test_csharp_attributed_class_declaration_is_recognized(tmp_path) -> None:
+    source = _write(
+        tmp_path,
+        "Old.cs",
+        """[Obsolete("retired")] public class Old
+{
+    public void Gone() {}
+}
+""",
+    )
+
+    classes, functions, _ = get_structure(source, "C#")
+
+    assert classes == {"Old": ["Gone"]}
+    assert functions == []
+
+
+def test_javascript_anonymous_class_is_not_named_after_its_clause(tmp_path) -> None:
+    source = _write(
+        tmp_path,
+        "anon.js",
+        "export default class extends Base {\n  method() {}\n}\n",
+    )
+
+    classes, functions, _ = get_structure(source, "JavaScript")
+
+    assert classes == {}
+    assert functions == []
+
+
+def test_typescript_exported_default_class_is_recognized(tmp_path) -> None:
+    source = _write(
+        tmp_path,
+        "Widget.ts",
+        """export default abstract class Widget<T> {
+  render(value: T): void {}
+}
+
+function helper() {}
+""",
+    )
+
+    classes, functions, _ = get_structure(source, "TypeScript")
+
+    assert classes == {"Widget": ["render"]}
+    assert functions == ["helper"]
+
+
+def test_java_member_after_class_body_is_a_top_level_function(tmp_path) -> None:
+    source = _write(
+        tmp_path,
+        "Orphan.java",
+        """public class First {
+  public void alpha() {}
+}
+
+public void orphan() {}
+""",
+    )
+
+    classes, functions, _ = get_structure(source, "Java")
+
+    assert classes == {"First": ["alpha"]}
+    assert functions == ["orphan"]
+
+
+def test_csharp_member_after_class_body_is_a_top_level_function(tmp_path) -> None:
+    source = _write(
+        tmp_path,
+        "Orphan.cs",
+        """namespace N {
+  public class C {
+    public void alpha() {}
+  }
+}
+public static void Helper() {}
+""",
+    )
+
+    classes, functions, _ = get_structure(source, "C#")
+
+    assert classes == {"C": ["alpha"]}
+    assert functions == ["Helper"]
+
+
+def test_java_nested_blocks_do_not_close_class_scope_early(tmp_path) -> None:
+    source = _write(
+        tmp_path,
+        "Widget.java",
+        """public class Widget {
+    private void render(boolean ready) {
+        if (ready) {
+            draw();
+        }
+    }
+
+    private void reset() {}
+}
+
+public static void main(String[] args) {}
+""",
+    )
+
+    classes, functions, _ = get_structure(source, "Java")
+
+    assert classes == {"Widget": ["render", "reset"]}
+    assert functions == ["main"]
+
+
+def test_csharp_nested_blocks_do_not_close_class_scope_early(tmp_path) -> None:
+    source = _write(
+        tmp_path,
+        "Widget.cs",
+        """public class Widget
+{
+    private void Render(bool ready)
+    {
+        if (ready)
+        {
+            Draw();
+        }
+    }
+
+    private void Reset() {}
+}
+
+public static void Main() {}
+""",
+    )
+
+    classes, functions, _ = get_structure(source, "C#")
+
+    assert classes == {"Widget": ["Render", "Reset"]}
+    assert functions == ["Main"]
+
+
+def test_java_braces_in_strings_and_comments_do_not_shift_class_scope(
+    tmp_path,
+) -> None:
+    source = _write(
+        tmp_path,
+        "Braces.java",
+        """public class Braces {
+    public String template() {
+        return "{ not a block";  // a trailing } in a comment
+    }
+}
+
+public void orphan() {}
+""",
+    )
+
+    classes, functions, _ = get_structure(source, "Java")
+
+    assert classes == {"Braces": ["template"]}
+    assert functions == ["orphan"]
+
+
+def test_javascript_braces_in_block_comment_do_not_close_class_scope(tmp_path) -> None:
+    source = _write(
+        tmp_path,
+        "commented.js",
+        """class A {
+  /* closes with } here
+     and opens with { there */
+  method() {}
+}
+function outside() {}
+""",
+    )
+
+    classes, functions, _ = get_structure(source, "JavaScript")
+
+    assert classes == {"A": ["method"]}
+    assert functions == ["outside"]
