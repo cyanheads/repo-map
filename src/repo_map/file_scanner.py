@@ -5,12 +5,18 @@ import json
 import logging
 import os
 import sqlite3
+import stat
+from dataclasses import dataclass
 from typing import Any
 
 import pathspec
 
 from repo_map.code_parser import get_imports, get_module_docstring, get_structure
-from repo_map.models import SUPPORTED_LANGUAGES
+from repo_map.models import (
+    MAX_SOURCE_BYTES,
+    SUPPORTED_LANGUAGES,
+    SUPPORTED_TEXT_LANGUAGES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +56,14 @@ DEFAULT_IGNORE_PATTERNS = [
 ]
 
 
+@dataclass(frozen=True, slots=True)
+class SourceSnapshot:
+    """A complete eligible source file and the hash of its exact bytes."""
+
+    source: str
+    sha256: str
+
+
 def get_ignore_spec(root_dir: str) -> pathspec.GitIgnoreSpec:
     """Create a GitIgnoreSpec combining default patterns with the root .gitignore.
 
@@ -71,17 +85,39 @@ def get_ignore_spec(root_dir: str) -> pathspec.GitIgnoreSpec:
     return pathspec.GitIgnoreSpec.from_lines(filtered)
 
 
-def compute_file_hash(file_path: str) -> str:
-    """Compute the SHA-256 hash of a file's bytes."""
-    sha256 = hashlib.sha256()
+def load_source_snapshot(
+    file_path: str,
+    language: str | None,
+    expected_hash: str | None = None,
+) -> SourceSnapshot | None:
+    """Load a complete eligible UTF-8 source file without following symlinks."""
+    if language not in SUPPORTED_TEXT_LANGUAGES:
+        return None
+
     try:
+        file_stat = os.lstat(file_path)
+        if not stat.S_ISREG(file_stat.st_mode):
+            return None
         with open(file_path, "rb") as handle:
-            for chunk in iter(lambda: handle.read(8192), b""):
-                sha256.update(chunk)
-        return sha256.hexdigest()
+            raw_source = handle.read(MAX_SOURCE_BYTES + 1)
     except OSError as exc:
-        logger.error("Error reading file %s for hashing: %s", file_path, exc)
-        return ""
+        logger.warning("Cannot read source file %s: %s", file_path, exc)
+        return None
+
+    if len(raw_source) > MAX_SOURCE_BYTES or b"\0" in raw_source:
+        return None
+
+    try:
+        source = raw_source.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return None
+
+    source_hash = hashlib.sha256(raw_source).hexdigest()
+    if expected_hash is not None and source_hash != expected_hash:
+        logger.warning("Source file changed after scanning; skipping %s", file_path)
+        return None
+
+    return SourceSnapshot(source=source, sha256=source_hash)
 
 
 def _detect_language(file_path: str) -> str | None:
@@ -108,12 +144,18 @@ def _process_file(
         "level": level,
         "type": "file",
         "language": language,
+        "source_eligible": False,
     }
 
     if not language:
         return file_info
 
-    file_hash = compute_file_hash(full_path)
+    snapshot = load_source_snapshot(full_path, language)
+    if snapshot is None:
+        return file_info
+
+    file_hash = snapshot.sha256
+    file_info["source_eligible"] = True
     cursor = cache_conn.cursor()
     cursor.execute(
         """
@@ -151,9 +193,14 @@ def _process_file(
         )
         return file_info
 
-    classes, funcs, consts = get_structure(full_path, language)
-    docstring = get_module_docstring(full_path, language)
-    imports = get_imports(full_path, language)
+    try:
+        classes, funcs, consts = get_structure(full_path, language)
+        docstring = get_module_docstring(full_path, language)
+        imports = get_imports(full_path, language)
+    except UnicodeDecodeError as exc:
+        logger.warning("Cannot decode source file %s as UTF-8: %s", full_path, exc)
+        file_info["source_eligible"] = False
+        return file_info
     file_info.update(
         {
             "classes": classes,

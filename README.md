@@ -15,7 +15,7 @@ repo-map scans a repository, extracts structural metadata, and asks an OpenRoute
 
 - Markdown and console repository trees
 - Python AST extraction plus lightweight Java, JavaScript, TypeScript, and C# structure parsing
-- Structured descriptions, developer considerations, maintenance flags, dependency notes, architectural roles, refactoring suggestions, and security assessments
+- Structured descriptions, developer considerations, maintenance flags, dependency notes, architectural roles, refactoring suggestions, and security assessments, grounded in each file's own source
 - Root `.gitignore` support plus built-in exclusions for caches, dependencies, build output, and repo-map artifacts
 - Symlink-safe traversal that does not follow linked files or directories
 - SHA-256-based SQLite cache for unchanged files
@@ -55,7 +55,9 @@ Optional environment variables:
 | `OPENROUTER_MODEL_NAME` | `anthropic/claude-sonnet-4.6` | OpenRouter model |
 | `API_SEMAPHORE_LIMIT` | `3` | Maximum concurrent API calls |
 
-repo-map sends repository paths, languages, imports, symbols, and existing descriptions to OpenRouter. Review the target repository and its ignore rules before approving a run. Do not analyze secrets or source you are not authorized to disclose.
+repo-map sends repository paths, languages, imports, symbols, existing descriptions, and **the full text of each eligible file** to OpenRouter. Review the target repository and its ignore rules before approving a run. Do not analyze secrets or source you are not authorized to disclose.
+
+A file's source is sent only when it is a regular (non-symlinked) file in a supported text format, at most 64 KiB, free of NUL bytes, and valid UTF-8. Recognized binary and media formats, oversized files, and unreadable files are never sent and never cached.
 
 ## Use
 
@@ -99,8 +101,8 @@ Add them to the target repository's ignore rules if needed. Delete `.repo-map-ca
 1. Load built-in exclusions and the target repository's root `.gitignore`.
 2. Walk the directory tree and extract supported structural metadata.
 3. Compare file hashes with the SQLite cache.
-4. Request structured JSON metadata from OpenRouter for eligible changed files.
-5. Update the cache and write the console, JSON, and Markdown outputs.
+4. Request structured JSON metadata from OpenRouter for eligible changed files, sending each file's source alongside the tree.
+5. Cache validated results only, then write the console, JSON, and Markdown outputs.
 
 ## Development
 

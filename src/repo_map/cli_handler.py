@@ -14,7 +14,11 @@ from tqdm import tqdm
 from repo_map.cache_manager import load_cache
 from repo_map.config import settings
 from repo_map.file_scanner import summarize_repo
-from repo_map.llm_service import get_llm_descriptions, update_api_semaphore_limit
+from repo_map.llm_service import (
+    AnalysisOutcome,
+    get_llm_descriptions,
+    update_api_semaphore_limit,
+)
 from repo_map.logging_utils import setup_logging
 from repo_map.report_generator import (
     print_tree,
@@ -105,27 +109,34 @@ class RepoMapApp:
             logger.info("No new or modified files to enhance. All up to date.")
             return
 
-        async def enhance_file(file_data: dict[str, Any]) -> dict[str, Any]:
-            await get_llm_descriptions(structure, file_data, model=model_name)
-            return file_data
+        async def enhance_file(
+            file_data: dict[str, Any],
+        ) -> tuple[dict[str, Any], AnalysisOutcome]:
+            outcome = await get_llm_descriptions(structure, file_data, model=model_name)
+            return file_data, outcome
 
         pending = [asyncio.create_task(enhance_file(file)) for file in tasks]
         with tqdm(total=len(pending), desc="Enhancing files", ncols=100) as progress:
             for completed in asyncio.as_completed(pending):
-                file = await completed
-                tqdm.write(f"Processed: {file['name']}")
-                self._update_cache_for_file(file)
+                file, outcome = await completed
+                if outcome is AnalysisOutcome.SUCCESS:
+                    tqdm.write(f"Processed: {file['name']}")
+                    self._update_cache_for_file(file)
+                else:
+                    tqdm.write(f"Not analyzed: {file['name']}")
                 progress.update()
 
     def _get_files_to_process(self, structure: list[dict[str, Any]]) -> set[str]:
-        """Determine which files need LLM enhancement based on cache state."""
+        """Determine which files need LLM enhancement based on cache state.
+
+        Eligibility is the scanner's shared source policy, not parser output, so
+        class-only modules and data or configuration files are candidates too.
+        """
         assert self.cache_conn is not None
         cursor = self.cache_conn.cursor()
         files_to_process: set[str] = set()
         for item in structure:
-            if item["type"] == "file" and (
-                item.get("imports") or item.get("functions")
-            ):
+            if item["type"] == "file" and item.get("source_eligible"):
                 cursor.execute("SELECT hash FROM cache WHERE path = ?", (item["path"],))
                 row = cursor.fetchone()
                 if not row or row[0] != item.get("hash", ""):

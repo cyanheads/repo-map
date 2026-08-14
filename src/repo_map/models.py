@@ -97,3 +97,21 @@ SUPPORTED_LANGUAGES = {
     ".ape": "Audio",
     ".alac": "Audio",
 }
+
+MAX_SOURCE_BYTES = 65_536
+
+NON_TEXT_LANGUAGES = frozenset(
+    {
+        "Audio",
+        "Database",
+        "Document",
+        "Image",
+        "PDF",
+        "PowerPointPresentation",
+        "Video",
+    }
+)
+
+SUPPORTED_TEXT_LANGUAGES = frozenset(SUPPORTED_LANGUAGES.values()).difference(
+    NON_TEXT_LANGUAGES
+)

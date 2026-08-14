@@ -34,11 +34,11 @@
 1. `run_main()` launches the async entrypoint (`src/repo_map/main.py`).
 2. `summarize_repo()` walks the tree, merges the repo root `.gitignore` with built-in defaults, records directories, and captures docstrings, imports, classes, functions, and constants for supported extensions (`src/repo_map/file_scanner.py`).
 3. Cached hashes short-circuit unchanged files; fresh files have structure extracted via `code_parser.py` helpers before LLM enhancement.
-4. `_enhance_summary_with_llm()` selects files with structural info, queues them, and streams prompts through `llm_service.get_llm_descriptions()` to populate descriptions, developer considerations, maintenance flags, and key dependencies.
+4. `_enhance_summary_with_llm()` selects files the scanner marked `source_eligible`, queues them, and streams prompts through `llm_service.get_llm_descriptions()` to populate descriptions, developer considerations, maintenance flags, and key dependencies. Only a validated success is written to the cache; a failed analysis leaves the file pending for the next run.
 5. Responses update in-memory structures + cache, `_print_tree()` logs an ASCII map, and `_save_markdown_map()` writes `<repo>_repo_map.md` to disk.
 
 ## LLM Expectations
-The tool sends each file to the LLM with the repository tree as background and expects a JSON object with these fields (defined in `SYSTEM_PROMPT` in `src/repo_map/llm_service.py`):
+The tool sends each file to the LLM with the repository tree as background and the target file's complete source as delimited, explicitly untrusted data, and expects a JSON object with these fields (defined in `SYSTEM_PROMPT` in `src/repo_map/llm_service.py`):
 
 1.  **`description`** (string) — 1-2 sentences on the file's role and responsibility.
 2.  **`developer_consideration`** (string | null) — The single most important thing a contributor needs to know: a non-obvious dependency, performance pitfall, security concern, or usage pattern.
@@ -61,7 +61,7 @@ The OpenRouter request sets `response_format: {"type": "json_object"}` to enforc
 - `src/repo_map/llm_service.py` – OpenRouter client, concurrency semaphore, exponential backoff, response parsing, and generation of descriptions, developer considerations, maintenance flags, and key dependencies.
 - `src/repo_map/cache_manager.py` – SQLite lifecycle and schema migrations.
 - `src/repo_map/config.py` – Pydantic settings bound to env / `.env`; instantiates a singleton `settings` object.
-- `src/repo_map/models.py` – extension-to-language lookup used by the scanner.
+- `src/repo_map/models.py` – extension-to-language lookup, plus the text/non-text split (`NON_TEXT_LANGUAGES`, `SUPPORTED_TEXT_LANGUAGES`) and `MAX_SOURCE_BYTES` that decide which files may have their source uploaded.
 
 ## Working With the Cache
 - Located inside the target repo (`.repo-map-cache.db`) so analyses travel with the project.
@@ -79,7 +79,7 @@ The OpenRouter request sets `response_format: {"type": "json_object"}` to enforc
 - Type hints: project exposes `py.typed`; ensure new modules remain typed to support consumers.
 
 ## Extending repo-map
-- Add new file types via `SUPPORTED_LANGUAGES` in `src/repo_map/models.py`.
+- Add new file types via `SUPPORTED_LANGUAGES` in `src/repo_map/models.py`, and add the language to `NON_TEXT_LANGUAGES` when the format is binary or media, so its bytes are never sent to OpenRouter.
 - Provide language-specific structure/import extraction by expanding switch logic in `src/repo_map/code_parser.py`.
 - Adjust concurrency or headers by modifying `Settings` defaults in `src/repo_map/config.py`.
 - To persist additional metadata, alter both the cache schema (`cache_manager.py`) and tree serialization in `main.py`.
