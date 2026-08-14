@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.1] - 2026-08-13
+
+### Fixed
+- The Java, JavaScript, TypeScript, and C# class pattern matched the bare word "class" anywhere on a line, so prose in a comment or a string literal produced phantom class entries and misattributed subsequent members to them. The pattern is now anchored to the start of a line, aware of declaration modifiers, annotations/attributes, and generics, and lines are stripped of string and comment content before matching ([#26](https://github.com/cyanheads/repo-map/issues/26)).
+- `get_java_structure` and `get_csharp_structure` never closed class scope, so every member parsed after a class declaration — however far past its closing brace — was attributed to that class instead of reported as a top-level function. Both extractors now track brace depth the same way `get_javascript_structure` already did, closing scope at the class body's closing brace ([#27](https://github.com/cyanheads/repo-map/issues/27)).
+- An OpenRouter response with an unfamiliar shape (a choice missing `message` or `content`, or any other malformed structure) raised past `get_llm_descriptions()` and `enhance_file()`, aborting the entire enhancement pass and silently discarding every file still in flight, including responses that had already arrived. The response shape is now defensively unwrapped and reported as a failed analysis for that file only, and `enhance_file()` catches any exception from `get_llm_descriptions()` at the per-file boundary so one file's failure never stops its peers ([#16](https://github.com/cyanheads/repo-map/issues/16)).
+
 ## [0.11.0] - 2026-08-13
 
 ### Fixed
