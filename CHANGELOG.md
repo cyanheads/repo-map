@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-08-13
+
+### Added
+- Each eligible file's complete source is now sent to the LLM alongside its metadata, as explicitly delimited, untrusted data, so analysis is grounded in the file's actual content rather than only its extracted imports and symbols ([#10](https://github.com/cyanheads/repo-map/issues/10)). A file's source is uploaded only when it is a regular (non-symlinked) file in a supported text format, at most 64 KiB, free of NUL bytes, and valid UTF-8; oversized, binary, and unreadable files are never sent and never cached.
+
+### Changed
+- `parse_llm_response` now validates every contract field before applying an LLM response to the cache; a partial or malformed response returns a failed outcome and leaves the file pending for the next run instead of writing incomplete data ([#6](https://github.com/cyanheads/repo-map/issues/6)).
+- File enrichment eligibility is now determined by the scanner's shared source policy rather than by parsed imports or functions, so class-only modules and data or configuration files are analyzed too ([#11](https://github.com/cyanheads/repo-map/issues/11)).
+- Ruff line length 120 → 88.
+
+### Removed
+- Unused `get_constants` helper from `code_parser.py`; `get_structure` already returns constants.
+- Unused `[tool.pylint."MESSAGES CONTROL"]` block from `pyproject.toml`.
+
 ## [0.8.3] - 2026-08-13
 
 ### Fixed
