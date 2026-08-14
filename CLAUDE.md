@@ -75,6 +75,8 @@ Cache files are created **inside the target repository**:
 
 When files change, their hash changes and they're reprocessed. Delete `.repo-map-cache.db` to force full regeneration.
 
+Cache rows are keyed by repository-relative path in forward-slash form, so the database stays valid when the repository is renamed, cloned, or checked out at another prefix. A row written under the older absolute-path key matches nothing and reads as a miss. Each run ends by deleting rows whose key no file in that scan claims, which removes deleted files and any leftover absolute-path keys.
+
 ## Configuration
 
 Settings are loaded from environment variables or `.env` file via Pydantic:

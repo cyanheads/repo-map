@@ -11,6 +11,7 @@ from typing import Any
 
 import pathspec
 
+from repo_map.cache_manager import relative_cache_key
 from repo_map.code_parser import get_imports, get_module_docstring, get_structure
 from repo_map.models import (
     MAX_SOURCE_BYTES,
@@ -139,14 +140,21 @@ def _detect_language(file_path: str) -> str | None:
 
 
 def _process_file(
-    full_path: str, level: int, cache_conn: sqlite3.Connection
+    full_path: str, rel_path: str, level: int, cache_conn: sqlite3.Connection
 ) -> dict[str, Any]:
-    """Return metadata for a single file, preferring cached data."""
+    """Return metadata for a single file, preferring cached data.
+
+    The two path fields are not interchangeable: ``path`` is absolute and is
+    what every disk read resolves (the process working directory is not
+    necessarily the repository root), while ``rel_path`` is the portable cache
+    key and is the only value the cache is ever queried or written with.
+    """
     language = _detect_language(full_path)
 
     file_info: dict[str, Any] = {
         "name": os.path.basename(full_path),
         "path": full_path,
+        "rel_path": rel_path,
         "level": level,
         "type": "file",
         "language": language,
@@ -178,7 +186,7 @@ def _process_file(
         FROM cache
         WHERE path = ?
         """,
-        (full_path,),
+        (rel_path,),
     )
     row = cursor.fetchone()
 
@@ -268,7 +276,14 @@ def summarize_repo(
                 )
                 _scan(full_path, level + 1)
             elif entry.is_file(follow_symlinks=False):
-                summary.append(_process_file(full_path, level, cache_conn))
+                summary.append(
+                    _process_file(
+                        full_path,
+                        relative_cache_key(abs_root_dir, full_path),
+                        level,
+                        cache_conn,
+                    )
+                )
 
     _scan(abs_root_dir, 0)
     return summary

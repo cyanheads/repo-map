@@ -65,6 +65,9 @@ The OpenRouter request sets `response_format: {"type": "json_object"}` to enforc
 
 ## Working With the Cache
 - Located inside the target repo (`.repo-map-cache.db`) so analyses travel with the project.
+- `path` holds the repository-relative key in forward-slash form; `file_info["path"]` stays absolute for disk reads and `file_info["rel_path"]` carries the key. A rename, clone, or checkout at another prefix keeps every entry valid.
+- A row under the older absolute-path key matches no relative key, so it reads as a miss; nothing rewrites keys in place, because two prefixes reduce to one key and would violate the primary key.
+- Each run ends with a prune (`prune_cache`) that deletes rows no scanned file claims — deleted files and leftover absolute-path keys alike.
 - Schema upgrades run automatically on load; delete the file to force a clean regeneration.
 - Descriptions, developer considerations, maintenance flags, key dependencies, imports, and functions are cached alongside hashes for reuse.
 - `hash` column stores SHA-256 of each processed file; updating source without deleting cache still reprocesses because hashes change.

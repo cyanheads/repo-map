@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -86,6 +87,33 @@ def _assert_single_line_failure(
     assert expected in output, output
 
 
+def _cache_every_scanned_file(app: RepoMapApp, repository: Path) -> None:
+    """Record a validated analysis for every file the scanner reports."""
+    for entry in cli_module.summarize_repo(str(repository), app.cache_conn):
+        if entry["type"] == "file":
+            entry["description"] = "cached"
+            app._update_cache_for_file(entry)
+
+
+def _pending_names(app: RepoMapApp, repository: Path) -> set[str]:
+    """Basenames of the files a fresh scan of ``repository`` would send to the LLM."""
+    structure = cli_module.summarize_repo(str(repository), app.cache_conn)
+    return {Path(path).name for path in app._get_files_to_process(structure)}
+
+
+def _cache_keys(connection) -> set[str]:
+    return {row[0] for row in connection.execute("SELECT path FROM cache")}
+
+
+def _stub_successful_analysis(monkeypatch) -> None:
+    """Answer every OpenRouter request with a contract-complete analysis."""
+
+    async def analysis(messages, model, temperature):
+        return {"choices": [{"message": {"content": json.dumps(WELL_FORMED_ANALYSIS)}}]}
+
+    monkeypatch.setattr(llm_module, "rate_limited_api_call", analysis)
+
+
 def _answers(monkeypatch, *responses: str) -> list[str]:
     """Queue disclosure-prompt responses, returning the prompts actually shown."""
     shown: list[str] = []
@@ -109,11 +137,12 @@ def test_get_output_path_uses_repository_name(tmp_path) -> None:
 
 
 def test_get_files_to_process_uses_hash_cache(tmp_path) -> None:
+    """Cache lookups key on the relative path; the pending set names files to read."""
     source = tmp_path / "module.py"
     connection = load_cache(str(tmp_path))
     connection.execute(
         "INSERT INTO cache (path, hash) VALUES (?, ?)",
-        (str(source), "current"),
+        ("module.py", "current"),
     )
     connection.commit()
     app = RepoMapApp()
@@ -121,18 +150,21 @@ def test_get_files_to_process_uses_hash_cache(tmp_path) -> None:
     structure = [
         {
             "path": str(source),
+            "rel_path": "module.py",
             "type": "file",
             "source_eligible": True,
             "hash": "current",
         },
         {
             "path": str(tmp_path / "changed.py"),
+            "rel_path": "changed.py",
             "type": "file",
             "source_eligible": True,
             "hash": "changed",
         },
         {
             "path": str(tmp_path / "binary.png"),
+            "rel_path": "binary.png",
             "type": "file",
             "source_eligible": False,
         },
@@ -146,6 +178,34 @@ def test_get_files_to_process_uses_hash_cache(tmp_path) -> None:
     connection.close()
 
     assert pending == {str(tmp_path / "changed.py")}
+
+
+def test_get_files_to_process_ignores_a_legacy_absolute_path_row(tmp_path) -> None:
+    """A pre-upgrade row never matches a relative key, so its file is pending."""
+    source = tmp_path / "module.py"
+    connection = load_cache(str(tmp_path))
+    connection.execute(
+        "INSERT INTO cache (path, hash) VALUES (?, ?)",
+        (str(source), "current"),
+    )
+    connection.commit()
+    app = RepoMapApp()
+    app.cache_conn = connection
+
+    pending = app._get_files_to_process(
+        [
+            {
+                "path": str(source),
+                "rel_path": "module.py",
+                "type": "file",
+                "source_eligible": True,
+                "hash": "current",
+            }
+        ]
+    )
+    connection.close()
+
+    assert pending == {str(source)}
 
 
 def test_disclosure_states_full_source_upload_and_root_gitignore_scope(
@@ -601,3 +661,126 @@ def test_malformed_response_shapes_leave_the_rest_of_the_pass_intact(
     assert (tmp_path / f"{tmp_path.name}_repo_map.md").is_file()
     assert cached == {"early.py", "late.py"}
     assert pending == {"no-content.py", "no-message.py"}
+
+
+def test_cache_entries_survive_a_repository_rename(tmp_path) -> None:
+    """Moving the repository invalidates nothing -- issue #24."""
+    original = tmp_path / "project"
+    (original / "src").mkdir(parents=True)
+    (original / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (original / "src" / "nested.py").write_text("VALUE = 2\n", encoding="utf-8")
+    connection = load_cache(str(original))
+    app = RepoMapApp()
+    app.cache_conn = connection
+    _cache_every_scanned_file(app, original)
+
+    assert _pending_names(app, original) == set()
+    connection.close()
+
+    moved = tmp_path / "project-renamed"
+    shutil.move(str(original), str(moved))
+    connection = load_cache(str(moved))
+    app = RepoMapApp()
+    app.cache_conn = connection
+    pending = _pending_names(app, moved)
+    keys = _cache_keys(connection)
+    connection.close()
+
+    assert pending == set()
+    assert keys == {"mod.py", "src/nested.py"}
+
+
+def test_cache_copied_into_a_fresh_checkout_is_reused(tmp_path) -> None:
+    """A cache database travels into another checkout at a different prefix."""
+    origin = tmp_path / "origin"
+    (origin / "src").mkdir(parents=True)
+    (origin / "src" / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    connection = load_cache(str(origin))
+    app = RepoMapApp()
+    app.cache_conn = connection
+    _cache_every_scanned_file(app, origin)
+    connection.close()
+
+    checkout = tmp_path / "ci" / "workspace" / "checkout"
+    shutil.copytree(origin, checkout)
+    connection = load_cache(str(checkout))
+    app = RepoMapApp()
+    app.cache_conn = connection
+    structure = cli_module.summarize_repo(str(checkout), connection)
+    pending = app._get_files_to_process(structure)
+    connection.close()
+
+    cached_file = next(item for item in structure if item["name"] == "mod.py")
+    assert pending == set()
+    assert cached_file["description"] == "cached"
+
+
+def test_changed_file_is_still_detected_as_pending(tmp_path) -> None:
+    """Regression: hash mismatch on a relative key still marks a file pending."""
+    repository = tmp_path / "project"
+    (repository / "src").mkdir(parents=True)
+    (repository / "stable.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (repository / "src" / "edited.py").write_text("VALUE = 2\n", encoding="utf-8")
+    connection = load_cache(str(repository))
+    app = RepoMapApp()
+    app.cache_conn = connection
+    _cache_every_scanned_file(app, repository)
+    (repository / "src" / "edited.py").write_text("VALUE = 3\n", encoding="utf-8")
+
+    pending = _pending_names(app, repository)
+    connection.close()
+
+    assert pending == {"edited.py"}
+
+
+def test_run_prunes_rows_for_deleted_files_and_legacy_keys(
+    tmp_path, monkeypatch
+) -> None:
+    """A run ends with one row per scanned file and nothing else -- issue #24."""
+    _stub_successful_analysis(monkeypatch)
+    (tmp_path / "kept.py").write_text("VALUE = 1\n", encoding="utf-8")
+    connection = load_cache(str(tmp_path))
+    for key in ("deleted.py", "src/removed.py", str(tmp_path / "kept.py")):
+        connection.execute(
+            "INSERT INTO cache (path, hash) VALUES (?, ?)", (key, "stale")
+        )
+    connection.commit()
+    app = RepoMapApp()
+    app.args = argparse.Namespace(
+        repository_path=str(tmp_path), yes=True, model="test-model", concurrency=3
+    )
+    app.cache_conn = connection
+
+    asyncio.run(app._process_repository())
+    keys = _cache_keys(connection)
+    pending = _pending_names(app, tmp_path)
+    connection.close()
+
+    assert keys == {"kept.py"}
+    assert pending == set()
+
+
+def test_two_legacy_rows_for_one_file_upgrade_without_a_unique_violation(
+    tmp_path, monkeypatch
+) -> None:
+    """Two absolute-path rows reducing to one relative key must not collide."""
+    _stub_successful_analysis(monkeypatch)
+    (tmp_path / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    connection = load_cache(str(tmp_path))
+    for prefix in ("/checkout-a/project", "/checkout-b/project"):
+        connection.execute(
+            "INSERT INTO cache (path, hash) VALUES (?, ?)",
+            (f"{prefix}/mod.py", "legacy"),
+        )
+    connection.commit()
+    app = RepoMapApp()
+    app.args = argparse.Namespace(
+        repository_path=str(tmp_path), yes=True, model="test-model", concurrency=3
+    )
+    app.cache_conn = connection
+
+    asyncio.run(app._process_repository())
+    keys = _cache_keys(connection)
+    connection.close()
+
+    assert keys == {"mod.py"}

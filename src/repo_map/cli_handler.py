@@ -11,7 +11,7 @@ from typing import Any
 
 from tqdm import tqdm
 
-from repo_map.cache_manager import CacheError, load_cache
+from repo_map.cache_manager import CacheError, load_cache, prune_cache
 from repo_map.config import settings
 from repo_map.file_scanner import summarize_repo
 from repo_map.llm_service import (
@@ -103,6 +103,7 @@ class RepoMapApp:
         )
         model_name = self.args.model or settings.openrouter_model_name
         await self._enhance_summary_with_llm(summary, model_name)
+        self._prune_orphaned_cache_entries(summary)
 
         logger.info("\nUpdated Repository Map:")
         print_tree(summary)
@@ -156,25 +157,48 @@ class RepoMapApp:
                     tqdm.write(f"Not analyzed: {file['name']}")
                 progress.update()
 
+    def _prune_orphaned_cache_entries(self, structure: list[dict[str, Any]]) -> None:
+        """Drop cache rows that no file in this scan claims.
+
+        Bounds the database to the current tree: rows for deleted files go, and
+        so do rows written under the pre-portable absolute-path key, which no
+        relative key can match.
+        """
+        assert self.cache_conn is not None
+        removed = prune_cache(
+            self.cache_conn,
+            {item["rel_path"] for item in structure if item["type"] == "file"},
+        )
+        if removed:
+            logger.info("Removed %s cache entries with no matching file.", removed)
+
     def _get_files_to_process(self, structure: list[dict[str, Any]]) -> set[str]:
         """Determine which files need LLM enhancement based on cache state.
 
         Eligibility is the scanner's shared source policy, not parser output, so
         class-only modules and data or configuration files are candidates too.
+        The cache is consulted by relative key; the returned paths are absolute,
+        because that is what the analysis pass reads from disk.
         """
         assert self.cache_conn is not None
         cursor = self.cache_conn.cursor()
         files_to_process: set[str] = set()
         for item in structure:
             if item["type"] == "file" and item.get("source_eligible"):
-                cursor.execute("SELECT hash FROM cache WHERE path = ?", (item["path"],))
+                cursor.execute(
+                    "SELECT hash FROM cache WHERE path = ?", (item["rel_path"],)
+                )
                 row = cursor.fetchone()
                 if not row or row[0] != item.get("hash", ""):
                     files_to_process.add(item["path"])
         return files_to_process
 
     def _update_cache_for_file(self, file_data: dict[str, Any]) -> None:
-        """Persist the latest LLM metadata for a file in the cache."""
+        """Persist the latest LLM metadata for a file in the cache.
+
+        `INSERT OR REPLACE` on the relative key also supersedes whatever the row
+        held before, so an upgrade never has to rewrite a key in place.
+        """
         assert self.cache_conn is not None
         cursor = self.cache_conn.cursor()
         cursor.execute(
@@ -195,7 +219,7 @@ class RepoMapApp:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                file_data["path"],
+                file_data["rel_path"],
                 file_data.get("hash", ""),
                 file_data.get("description", ""),
                 file_data.get("developer_consideration", ""),

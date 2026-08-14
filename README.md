@@ -18,7 +18,7 @@ repo-map scans a repository, extracts structural metadata, and asks an OpenRoute
 - Structured descriptions, developer considerations, maintenance flags, dependency notes, architectural roles, refactoring suggestions, and security assessments, grounded in each file's own source
 - Root `.gitignore` support plus built-in exclusions for caches, dependencies, build output, credential-bearing config formats, and repo-map artifacts
 - Symlink-safe traversal that does not follow linked files or directories
-- SHA-256-based SQLite cache for unchanged files
+- SHA-256-based SQLite cache for unchanged files, keyed by repository-relative path so it survives a rename, clone, or CI checkout at another prefix
 
 See [`examples/example.md`](examples/example.md) for a full sample report.
 
@@ -94,7 +94,7 @@ Each run creates these files inside the target repository:
 - `.repo-map-cache.db`: source hashes and cached LLM metadata
 - `.repo_map_structure.json`: pre-enhancement structural data
 
-Add them to the target repository's ignore rules if needed. Delete `.repo-map-cache.db` to force a complete reprocessing pass.
+Add them to the target repository's ignore rules if needed. Delete `.repo-map-cache.db` to force a complete reprocessing pass; the cache is otherwise self-maintaining, since entries are keyed by repository-relative path and every run drops the entries whose files it no longer finds.
 
 ## How it works
 
@@ -102,7 +102,7 @@ Add them to the target repository's ignore rules if needed. Delete `.repo-map-ca
 2. Walk the directory tree and extract supported structural metadata.
 3. Compare file hashes with the SQLite cache.
 4. Request structured JSON metadata from OpenRouter for eligible changed files, sending each file's source alongside the tree.
-5. Cache validated results only, then write the console, JSON, and Markdown outputs.
+5. Cache validated results only, drop cache entries with no matching file, then write the console, JSON, and Markdown outputs.
 
 A directory matching an exclusion is pruned rather than traversed, so nothing inside it is read, hashed, or sent.
 

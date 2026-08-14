@@ -101,12 +101,8 @@ def test_summarize_repo_detects_exact_filenames_and_longest_suffixes(tmp_path) -
     assert ".envrc" not in detected
 
 
-def test_summarize_repo_reuses_matching_cache_entry(tmp_path) -> None:
-    source = tmp_path / "sample.py"
-    source.write_text("def run():\n    pass\n", encoding="utf-8")
-    connection = load_cache(str(tmp_path))
-    first = summarize_repo(str(tmp_path), connection)
-    file_data = next(item for item in first if item["name"] == "sample.py")
+def _seed_cache_row(connection, key: str, file_hash: str, description: str) -> None:
+    """Insert a fully populated cache row under an explicit key."""
     connection.execute(
         """
         INSERT INTO cache (
@@ -116,9 +112,9 @@ def test_summarize_repo_reuses_matching_cache_entry(tmp_path) -> None:
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            str(source),
-            file_data["hash"],
-            "Cached description",
+            key,
+            file_hash,
+            description,
             "[]",
             "[]",
             "Stable",
@@ -130,12 +126,79 @@ def test_summarize_repo_reuses_matching_cache_entry(tmp_path) -> None:
     )
     connection.commit()
 
+
+def test_summarize_repo_reuses_matching_cache_entry(tmp_path) -> None:
+    source = tmp_path / "sample.py"
+    source.write_text("def run():\n    pass\n", encoding="utf-8")
+    connection = load_cache(str(tmp_path))
+    first = summarize_repo(str(tmp_path), connection)
+    file_data = next(item for item in first if item["name"] == "sample.py")
+    _seed_cache_row(connection, "sample.py", file_data["hash"], "Cached description")
+
     cached = summarize_repo(str(tmp_path), connection)
     connection.close()
 
     cached_file = next(item for item in cached if item["name"] == "sample.py")
     assert cached_file["description"] == "Cached description"
     assert cached_file["architectural_role"] == "Utility"
+
+
+def test_summarize_repo_keys_files_by_posix_relative_path(tmp_path) -> None:
+    """Cache keys are relative and forward-slash separated; `path` stays absolute."""
+    nested = tmp_path / "src" / "pkg"
+    nested.mkdir(parents=True)
+    (nested / "deep.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (tmp_path / "root.py").write_text("VALUE = 2\n", encoding="utf-8")
+    connection = load_cache(str(tmp_path))
+
+    summary = summarize_repo(str(tmp_path), connection)
+    connection.close()
+    files = {item["name"]: item for item in summary if item["type"] == "file"}
+
+    assert files["deep.py"]["rel_path"] == "src/pkg/deep.py"
+    assert files["root.py"]["rel_path"] == "root.py"
+    assert files["deep.py"]["path"] == str(nested / "deep.py")
+
+
+def test_summarize_repo_reuses_nested_cache_entries_after_a_repository_move(
+    tmp_path,
+) -> None:
+    """A relative key survives the repository moving to another prefix -- issue #24."""
+    original = tmp_path / "project"
+    (original / "src" / "pkg").mkdir(parents=True)
+    (original / "src" / "pkg" / "deep.py").write_text("VALUE = 1\n", encoding="utf-8")
+    connection = load_cache(str(original))
+    scanned = summarize_repo(str(original), connection)
+    deep = next(item for item in scanned if item["name"] == "deep.py")
+    _seed_cache_row(connection, "src/pkg/deep.py", deep["hash"], "Cached description")
+    connection.close()
+
+    moved = tmp_path / "project-renamed"
+    original.rename(moved)
+    connection = load_cache(str(moved))
+    summary = summarize_repo(str(moved), connection)
+    connection.close()
+
+    cached_file = next(item for item in summary if item["name"] == "deep.py")
+    assert cached_file["description"] == "Cached description"
+    assert cached_file["path"] == str(moved / "src" / "pkg" / "deep.py")
+
+
+def test_summarize_repo_treats_a_legacy_absolute_path_row_as_a_miss(tmp_path) -> None:
+    """A pre-upgrade absolute key matches nothing and is re-extracted -- issue #24."""
+    source = tmp_path / "sample.py"
+    source.write_text('"""Module."""\n\nVALUE = 1\n', encoding="utf-8")
+    connection = load_cache(str(tmp_path))
+    scanned = summarize_repo(str(tmp_path), connection)
+    file_data = next(item for item in scanned if item["name"] == "sample.py")
+    _seed_cache_row(connection, str(source), file_data["hash"], "Legacy description")
+
+    summary = summarize_repo(str(tmp_path), connection)
+    connection.close()
+
+    cached_file = next(item for item in summary if item["name"] == "sample.py")
+    assert cached_file["description"] == "Module."
+    assert "constants" in cached_file
 
 
 def test_source_snapshot_accepts_empty_and_exact_limit_but_not_one_over(
