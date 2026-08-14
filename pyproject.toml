@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "repo-map"
-version = "0.11.1"
+version = "0.12.0"
 description = "Generate a comprehensive summary and visualization of a repository structure, enhanced with AI-powered descriptions and developer considerations."
 authors = ["Cyanheads <casey@caseyjhand.com>"]
 license = "Apache-2.0"

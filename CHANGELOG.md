@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-08-13
+
+### Added
+- Each scanned file entry now carries a `rel_path` field (repository-relative, forward-slash separated) alongside the absolute `path`, and `rel_path` also appears in the emitted `.repo_map_structure.json` ([#24](https://github.com/cyanheads/repo-map/issues/24)).
+
+### Changed
+- Cache rows are now keyed by repository-relative path instead of absolute path, so `.repo-map-cache.db` stays valid across a rename, a fresh clone, or a checkout at another prefix. A row written under the older absolute-path key matches nothing, reads as a miss, and is never rewritten in place — two absolute keys for the same file would otherwise collide on the same relative key ([#24](https://github.com/cyanheads/repo-map/issues/24)).
+- Each run now ends with a pruning pass (`prune_cache`) that deletes cache rows no scanned file claims, removing entries for deleted files and any leftover absolute-path rows from before this change ([#24](https://github.com/cyanheads/repo-map/issues/24)).
+
 ## [0.11.1] - 2026-08-13
 
 ### Fixed
