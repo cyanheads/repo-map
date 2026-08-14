@@ -103,7 +103,7 @@ Watch for new exceptions, broken parsing, or LLM call failures. Fix anything tha
 
 `skills/` is the canonical source; `.agents/skills/` and `.claude/skills/` are read-only mirrors that local agent toolchains consume. They drift silently when `skills/` is edited.
 
-A Claude Code `PostToolUse` hook (in `.claude/settings.json`) runs the sync automatically after any Write/Edit/MultiEdit under `skills/`. If you authored skills outside Claude Code, or want to be sure, run it manually:
+`scripts.py check` (Step 5) verifies the mirrors: it fails, naming every missing or content-drifted mirror file, and writes nothing. Regenerating them is a separate, deliberate command:
 
 ```bash
 poetry run python scripts.py sync-skills
@@ -111,7 +111,9 @@ poetry run python scripts.py sync-skills
 python3 scripts/sync_skills.py
 ```
 
-The script is idempotent — it only copies missing or content-drifted files, and never deletes mirror-only files (those may be general-purpose skills sourced elsewhere).
+A Claude Code `PostToolUse` hook (in `.claude/settings.json`) runs that same mutating sync after any Write/Edit/MultiEdit under `skills/`, so reported drift usually means skills were authored outside Claude Code.
+
+Neither mode deletes: the sync copies only missing or content-drifted files, and the check reports a mirror-only file as an orphan instead of removing it (those may be general-purpose skills sourced elsewhere).
 
 ### 7. Wrap-up artifacts
 
@@ -145,7 +147,7 @@ Present a concise numbered summary to the user:
 - [ ] `poetry run python scripts.py check` passes
 - [ ] `poetry build` succeeds
 - [ ] Smoke test against a sample repo passes
-- [ ] `skills/` mirrors in sync (handled by the project check, or run `poetry run python scripts.py sync-skills` directly)
+- [ ] `skills/` mirrors in sync (the project check fails on drift; run `poetry run python scripts.py sync-skills` to regenerate them)
 - [ ] `CHANGELOG.md` entry added with concrete version + date
 - [ ] `pyproject.toml` version bumped
 - [ ] `AGENTS.md` / `CLAUDE.md` / `README.md` updated if behavior or commands changed

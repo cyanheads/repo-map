@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 CHECK_PATHS = ("src", "tests", "scripts.py", "scripts")
+SYNC_SKILLS_SCRIPT = Path(__file__).resolve().parent / "scripts" / "sync_skills.py"
 
 
 def _run(command: list[str], *, unoptimized: bool = False) -> None:
@@ -36,7 +37,7 @@ def run_tests() -> None:
 
 def run_check() -> None:
     """Run the complete local verification gate."""
-    run_sync_skills()
+    run_check_skills()
     run_lint()
     run_tests()
     _run(["poetry", "check", "--lock"])
@@ -49,14 +50,18 @@ def run_list_skills() -> None:
         print(skill_file.parent.name)
 
 
+def run_check_skills() -> None:
+    """Verify the ``skills/`` mirrors, failing on drift without rewriting them."""
+    _run([sys.executable, str(SYNC_SKILLS_SCRIPT), "--check"])
+
+
 def run_sync_skills() -> None:
     """Propagate ``skills/`` to local agent-tool mirrors.
 
     Delegates to ``scripts/sync_skills.py`` so the same logic is reachable
     without Poetry (e.g. from a Claude Code hook).
     """
-    script = Path(__file__).resolve().parent / "scripts" / "sync_skills.py"
-    _run([sys.executable, str(script)])
+    _run([sys.executable, str(SYNC_SKILLS_SCRIPT)])
 
 
 COMMANDS = {

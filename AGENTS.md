@@ -80,7 +80,7 @@ The OpenRouter request sets `response_format: {"type": "json_object"}` to enforc
 
 ## Developer Workflows
 - Install/update the Poetry environment: `poetry install`.
-- Full local gate: `poetry run python scripts.py check` (skill sync, Ruff, Black, pytest with assertions enabled, Poetry metadata).
+- Full local gate: `poetry run python scripts.py check` (skill-mirror verification, Ruff, Black, pytest with assertions enabled, Poetry metadata). It writes nothing of its own: a mirror under `.agents/skills/` or `.claude/skills/` that is missing or has drifted from `skills/` fails the gate by name — `poetry run python scripts.py sync-skills` regenerates them.
 - Formatting: `poetry run python scripts.py format`.
 - Focused lint/test commands: `poetry run python scripts.py lint` and `poetry run python scripts.py test`.
 - Build distributions: `poetry build`.
