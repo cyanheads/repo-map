@@ -42,6 +42,12 @@ DEFAULT_IGNORE_PATTERNS = [
     "venv/",
     "env/",
     ".env",
+    ".envrc",
+    "*.tfvars",
+    "*.tfstate",
+    "*.ini",
+    "*.conf",
+    "*.cfg",
     "build/",
     "dist/",
     "*.egg-info/",
@@ -217,7 +223,12 @@ def _process_file(
 def summarize_repo(
     root_dir: str, cache_conn: sqlite3.Connection
 ) -> list[dict[str, Any]]:
-    """Summarize the repository by recursively scanning directories and files."""
+    """Summarize the repository by recursively scanning directories and files.
+
+    Directory candidates are matched with a trailing separator so directory-only
+    ignore patterns (``build/``) apply to them, pruning the walk instead of
+    emitting an empty node and discarding the subtree one file at a time.
+    """
     summary: list[dict[str, Any]] = []
     abs_root_dir = os.path.abspath(root_dir)
     ignore_spec = get_ignore_spec(abs_root_dir)
@@ -240,11 +251,13 @@ def summarize_repo(
         for entry in entries:
             full_path = entry.path
             relative_path = os.path.relpath(full_path, abs_root_dir)
+            is_directory = entry.is_dir(follow_symlinks=False)
 
-            if ignore_spec.match_file(relative_path):
+            candidate = f"{relative_path}/" if is_directory else relative_path
+            if ignore_spec.match_file(candidate):
                 continue
 
-            if entry.is_dir(follow_symlinks=False):
+            if is_directory:
                 summary.append(
                     {
                         "name": entry.name,

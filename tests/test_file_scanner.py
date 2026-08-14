@@ -1,7 +1,9 @@
 """Tests for repository traversal and file metadata."""
 
 import builtins
+import os
 
+from repo_map import file_scanner
 from repo_map.cache_manager import load_cache
 from repo_map.file_scanner import (
     MAX_SOURCE_BYTES,
@@ -80,14 +82,13 @@ def test_summarize_repo_skips_file_and_directory_symlinks(tmp_path) -> None:
 
 def test_summarize_repo_detects_exact_filenames_and_longest_suffixes(tmp_path) -> None:
     expected = {
-        ".envrc": "Config",
         ".gitignore": "Git",
         "Dockerfile": "Docker",
         "container.dockerfile": "Docker",
         "main.py": "Python",
         "main.tfstate.backup": "Terraform",
     }
-    for name in [*expected, ".env"]:
+    for name in [*expected, ".env", ".envrc"]:
         (tmp_path / name).write_text("content\n", encoding="utf-8")
     connection = load_cache(str(tmp_path))
 
@@ -97,6 +98,7 @@ def test_summarize_repo_detects_exact_filenames_and_longest_suffixes(tmp_path) -
 
     assert {name: detected[name] for name in expected} == expected
     assert ".env" not in detected
+    assert ".envrc" not in detected
 
 
 def test_summarize_repo_reuses_matching_cache_entry(tmp_path) -> None:
@@ -185,6 +187,142 @@ def test_source_snapshot_rejects_read_failure(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(builtins, "open", fail_target)
 
     assert load_source_snapshot(str(source), "Text") is None
+
+
+def test_summarize_repo_reports_nested_directory_levels(tmp_path) -> None:
+    deep = tmp_path / "alpha" / "beta" / "gamma"
+    deep.mkdir(parents=True)
+    (deep / "deep.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (tmp_path / "root.py").write_text("VALUE = 2\n", encoding="utf-8")
+    connection = load_cache(str(tmp_path))
+
+    summary = summarize_repo(str(tmp_path), connection)
+    connection.close()
+
+    assert [(item["name"], item["type"], item["level"]) for item in summary] == [
+        ("alpha", "directory", 0),
+        ("beta", "directory", 1),
+        ("gamma", "directory", 2),
+        ("deep.py", "file", 3),
+        ("root.py", "file", 0),
+    ]
+
+
+def test_summarize_repo_prunes_default_ignored_directories_and_subtrees(
+    tmp_path,
+) -> None:
+    (tmp_path / "build" / "reports").mkdir(parents=True)
+    (tmp_path / "build" / "artifact.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (tmp_path / "build" / "reports" / "summary.md").write_text(
+        "# Report\n", encoding="utf-8"
+    )
+    (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
+    (tmp_path / "node_modules" / "pkg" / "index.js").write_text(
+        "var a = 1;\n", encoding="utf-8"
+    )
+    (tmp_path / "keep.py").write_text("VALUE = 2\n", encoding="utf-8")
+    connection = load_cache(str(tmp_path))
+
+    summary = summarize_repo(str(tmp_path), connection)
+    connection.close()
+
+    assert [(item["type"], item["name"]) for item in summary] == [("file", "keep.py")]
+
+
+def test_summarize_repo_never_scans_pruned_directories(tmp_path, monkeypatch) -> None:
+    (tmp_path / "node_modules" / "pkg" / "deep").mkdir(parents=True)
+    (tmp_path / "node_modules" / "pkg" / "index.js").write_text(
+        "var a = 1;\n", encoding="utf-8"
+    )
+    (tmp_path / "alpha").mkdir()
+    (tmp_path / "alpha" / "nested.py").write_text("VALUE = 1\n", encoding="utf-8")
+    connection = load_cache(str(tmp_path))
+    scanned: list[str] = []
+    real_scandir = file_scanner.os.scandir
+
+    def recording_scandir(path):
+        scanned.append(os.fspath(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(file_scanner.os, "scandir", recording_scandir)
+    summarize_repo(str(tmp_path), connection)
+    connection.close()
+
+    ignored_root = str(tmp_path / "node_modules")
+    assert [path for path in scanned if path.startswith(ignored_root)] == []
+    assert str(tmp_path / "alpha") in scanned
+
+
+def test_summarize_repo_prunes_gitignore_directory_pattern_not_partial_name(
+    tmp_path,
+) -> None:
+    (tmp_path / ".gitignore").write_text("generated/\n", encoding="utf-8")
+    (tmp_path / "generated" / "inner").mkdir(parents=True)
+    (tmp_path / "generated" / "inner" / "output.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
+    (tmp_path / "generated_docs").mkdir()
+    (tmp_path / "generated_docs" / "guide.md").write_text("# Guide\n", encoding="utf-8")
+    (tmp_path / "builder").mkdir()
+    (tmp_path / "builder" / "tool.py").write_text("VALUE = 2\n", encoding="utf-8")
+    connection = load_cache(str(tmp_path))
+
+    summary = summarize_repo(str(tmp_path), connection)
+    connection.close()
+
+    assert [(item["name"], item["level"]) for item in summary] == [
+        ("builder", 0),
+        ("tool.py", 1),
+        ("generated_docs", 0),
+        ("guide.md", 1),
+        (".gitignore", 0),
+    ]
+
+
+def test_summarize_repo_excludes_credential_bearing_formats_by_default(
+    tmp_path,
+) -> None:
+    excluded = [
+        ".env",
+        ".envrc",
+        "terraform.tfvars",
+        "prod.tfstate",
+        "credentials.ini",
+        "app.conf",
+        "boto.cfg",
+    ]
+    retained = ["main.tf", "main.tfstate.backup", "compose.yml", "notes.txt"]
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "secrets.ini").write_text(
+        "token = PLACEHOLDER\n", encoding="utf-8"
+    )
+    (tmp_path / "config" / "settings.json").write_text("{}\n", encoding="utf-8")
+    for name in [*excluded, *retained]:
+        (tmp_path / name).write_text("token = PLACEHOLDER\n", encoding="utf-8")
+    connection = load_cache(str(tmp_path))
+
+    summary = summarize_repo(str(tmp_path), connection)
+    connection.close()
+    files = {item["path"]: item for item in summary if item["type"] == "file"}
+
+    assert {os.path.basename(path) for path in files}.isdisjoint(excluded)
+    assert str(tmp_path / "config" / "secrets.ini") not in files
+    assert files[str(tmp_path / "config" / "settings.json")]["source_eligible"] is True
+    assert all(files[str(tmp_path / name)]["source_eligible"] for name in retained)
+
+
+def test_summarize_repo_honors_gitignore_negation_for_ignored_format(tmp_path) -> None:
+    (tmp_path / ".gitignore").write_text("!app.conf\n", encoding="utf-8")
+    (tmp_path / "app.conf").write_text("token = PLACEHOLDER\n", encoding="utf-8")
+    (tmp_path / "other.conf").write_text("token = PLACEHOLDER\n", encoding="utf-8")
+    connection = load_cache(str(tmp_path))
+
+    summary = summarize_repo(str(tmp_path), connection)
+    connection.close()
+    files = {item["name"]: item for item in summary if item["type"] == "file"}
+
+    assert files["app.conf"]["source_eligible"] is True
+    assert "other.conf" not in files
 
 
 def test_summarize_repo_skips_ineligible_files_without_stopping_siblings(

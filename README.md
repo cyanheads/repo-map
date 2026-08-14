@@ -16,7 +16,7 @@ repo-map scans a repository, extracts structural metadata, and asks an OpenRoute
 - Markdown and console repository trees
 - Python AST extraction plus lightweight Java, JavaScript, TypeScript, and C# structure parsing
 - Structured descriptions, developer considerations, maintenance flags, dependency notes, architectural roles, refactoring suggestions, and security assessments, grounded in each file's own source
-- Root `.gitignore` support plus built-in exclusions for caches, dependencies, build output, and repo-map artifacts
+- Root `.gitignore` support plus built-in exclusions for caches, dependencies, build output, credential-bearing config formats, and repo-map artifacts
 - Symlink-safe traversal that does not follow linked files or directories
 - SHA-256-based SQLite cache for unchanged files
 
@@ -103,6 +103,22 @@ Add them to the target repository's ignore rules if needed. Delete `.repo-map-ca
 3. Compare file hashes with the SQLite cache.
 4. Request structured JSON metadata from OpenRouter for eligible changed files, sending each file's source alongside the tree.
 5. Cache validated results only, then write the console, JSON, and Markdown outputs.
+
+A directory matching an exclusion is pruned rather than traversed, so nothing inside it is read, hashed, or sent.
+
+### Default exclusions
+
+| Group | Patterns |
+|:---|:---|
+| Version control | `.git/`, `.hg/`, `.svn/`, `CVS/` |
+| Caches and bytecode | `__pycache__/`, `*.pyc`, `*.pyo`, `*.pyd`, `.pytest_cache/`, `.mypy_cache/` |
+| Environments and dependencies | `.venv/`, `venv/`, `env/`, `node_modules/` |
+| Build output | `build/`, `dist/`, `*.egg-info/` |
+| Credential-bearing config | `.env`, `.envrc`, `*.tfvars`, `*.tfstate`, `*.ini`, `*.conf`, `*.cfg` |
+| Databases and logs | `*.db`, `*.sqlite3`, `*.log` |
+| Local noise and repo-map artifacts | `.DS_Store`, `.repo-map-cache.db`, `.repo_map_structure.json`, `*_repo_map.md` |
+
+These load before the target repository's root `.gitignore`, and matching follows gitignore last-match-wins semantics. A repository that wants an excluded file documented re-includes it with a negation in its own `.gitignore`, such as `!app.conf`.
 
 ## Development
 
