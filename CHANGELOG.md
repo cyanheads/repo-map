@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-08-13
+
+### Fixed
+- `API_SEMAPHORE_LIMIT` set to `0` or a non-integer via the environment or `.env` crashed during import, before `run_main()`'s handler could ever run, because `Settings()` and the shared rate limiter were both constructed at module scope; a corrupt `.repo-map-cache.db` or an unwritable cache directory also escaped uncaught, since neither `sqlite3.OperationalError` nor `sqlite3.DatabaseError` subclasses the `RuntimeError` the top-level handler guarded. Settings construction now raises `ConfigurationError` (a `ValueError`) that `run_main()` catches around its deferred import, and `load_cache()` now raises `CacheError` naming the cache path and the rebuild remedy; both paths exit 1 with one actionable line and no traceback. The `--concurrency 0` and missing-directory error paths are unchanged ([#21](https://github.com/cyanheads/repo-map/issues/21)).
+- The upload disclosure prompt said only "Files will be sent" and "uses .gitignore to exclude files," understating that each eligible file's complete source is sent and that only the repository's root `.gitignore` is applied; it also accepted a bare Enter as consent. The prompt now states both facts and requires an explicit `y`/`yes` — an empty answer takes the new `[y/N]` default and declines ([#23](https://github.com/cyanheads/repo-map/issues/23)).
+
 ## [0.10.2] - 2026-08-13
 
 ### Fixed
