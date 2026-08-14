@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.1] - 2026-08-13
+
+### Changed
+- `poetry run python scripts.py check` no longer runs the mutating skill-mirror sync as its first step; it now runs `scripts/sync_skills.py --check`, which compares `skills/` against `.agents/skills/` and `.claude/skills/` by content hash and writes nothing. A missing or drifted mirror file fails the gate (non-zero exit), naming the file, its mirror, and the `sync-skills` command to fix it. A mirror-only file is reported as an orphan and left in place; it does not fail the gate ([#25](https://github.com/cyanheads/repo-map/issues/25)).
+- The mutating path is unchanged and still reachable via `poetry run python scripts.py sync-skills`, `python3 scripts/sync_skills.py`, and the `PostToolUse` hook in `.claude/settings.json`.
+
 ## [0.13.0] - 2026-08-13
 
 ### Added
