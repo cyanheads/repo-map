@@ -3,39 +3,48 @@
 import json
 import logging
 import os
+import re
 from collections.abc import Generator
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_FENCE_PATTERN = re.compile(r"`{3,}")
+
+
+def _render_text(value: Any) -> str:
+    """Flatten model-authored text into a single safe tree line.
+
+    Collapses every whitespace run — newlines, carriage returns, and tabs
+    included — to one space, then spaces out any run of three or more
+    backticks so model output cannot close the Markdown report's own fence.
+    The caller's ``structure`` is never touched: only the rendered line is
+    normalized, so the raw text still reaches the cache and the JSON map.
+    """
+    collapsed = " ".join(str(value).split())
+    return _FENCE_PATTERN.sub(lambda match: " ".join(match.group()), collapsed)
+
 
 def format_tree_lines(structure: list[dict[str, Any]]) -> Generator[str, None, None]:
     """Yield lines that represent the repository tree with metadata."""
+    # Index ``d`` records whether the ancestor at depth ``d`` has a later
+    # sibling, which is what decides between a vertical bar and blank
+    # indentation for that prefix cell.
+    open_branches: list[bool] = []
     for i, item in enumerate(structure):
-        prefix = ""
-        for level in range(item["level"]):
-            is_parent_last = True
-            parent_index = -1
-            for k in range(i - 1, -1, -1):
-                if structure[k]["level"] == level - 1:
-                    parent_index = k
-                    break
-            if parent_index != -1:
-                for j in range(parent_index + 1, len(structure)):
-                    if structure[j]["level"] == level - 1:
-                        is_parent_last = False
-                        break
-                    if structure[j]["level"] < level - 1:
-                        break
-            prefix += "    " if is_parent_last else "│   "
+        level = item["level"]
 
         is_last = True
         for j in range(i + 1, len(structure)):
-            if structure[j]["level"] == item["level"]:
+            if structure[j]["level"] == level:
                 is_last = False
                 break
-            if structure[j]["level"] < item["level"]:
+            if structure[j]["level"] < level:
                 break
+
+        del open_branches[level:]
+        prefix = "".join("│   " if branch else "    " for branch in open_branches)
+        open_branches.append(not is_last)
 
         connector = "└── " if is_last else "├── "
         if item["type"] == "directory":
@@ -48,10 +57,11 @@ def format_tree_lines(structure: list[dict[str, Any]]) -> Generator[str, None, N
         details_prefix = prefix + ("    " if is_last else "│   ")
         detail_lines: list[str] = []
         if item.get("description"):
-            detail_lines.append(f"Description: {item['description']}")
+            detail_lines.append(f"Description: {_render_text(item['description'])}")
         if item.get("developer_consideration"):
             detail_lines.append(
-                f"Developer Consideration: {item['developer_consideration']}"
+                "Developer Consideration: "
+                f"{_render_text(item['developer_consideration'])}"
             )
 
         maintenance_flag = item.get("maintenance_flag")
@@ -64,11 +74,15 @@ def format_tree_lines(structure: list[dict[str, Any]]) -> Generator[str, None, N
 
         refactoring_suggestions = item.get("refactoring_suggestions")
         if refactoring_suggestions and refactoring_suggestions != "None":
-            detail_lines.append(f"Refactoring Suggestions: {refactoring_suggestions}")
+            detail_lines.append(
+                f"Refactoring Suggestions: {_render_text(refactoring_suggestions)}"
+            )
 
         security_assessment = item.get("security_assessment")
         if security_assessment and security_assessment != "None":
-            detail_lines.append(f"Security Assessment: {security_assessment}")
+            detail_lines.append(
+                f"Security Assessment: {_render_text(security_assessment)}"
+            )
 
         try:
             deps_str = item.get("critical_dependencies", "{}")
@@ -76,7 +90,9 @@ def format_tree_lines(structure: list[dict[str, Any]]) -> Generator[str, None, N
             if deps:
                 detail_lines.append("Critical Dependencies:")
                 for dep, reason in deps.items():
-                    detail_lines.append(f"  - {dep}: {reason}")
+                    detail_lines.append(
+                        f"  - {_render_text(dep)}: {_render_text(reason)}"
+                    )
         except json.JSONDecodeError:
             detail_lines.append("Critical Dependencies: (invalid JSON)")
 
