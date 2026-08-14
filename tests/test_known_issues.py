@@ -47,7 +47,9 @@ def test_unsuccessful_analysis_remains_pending(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cli_module, "get_llm_descriptions", failed_analysis)
     asyncio.run(app._enhance_summary_with_llm(structure, "test-model"))
 
-    pending = app._get_files_to_process(summarize_repo(str(tmp_path), connection))
+    pending = app._get_files_to_process(
+        summarize_repo(str(tmp_path), connection), "test-model"
+    )
     connection.close()
 
     assert str(source) in pending
@@ -61,7 +63,7 @@ def test_class_only_and_data_files_are_eligible_for_enrichment(tmp_path) -> None
     app.cache_conn = connection
     structure = summarize_repo(str(tmp_path), connection)
 
-    pending = app._get_files_to_process(structure)
+    pending = app._get_files_to_process(structure, "test-model")
     connection.close()
 
     assert pending == {

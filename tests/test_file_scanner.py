@@ -143,6 +143,32 @@ def test_summarize_repo_reuses_matching_cache_entry(tmp_path) -> None:
     assert cached_file["architectural_role"] == "Utility"
 
 
+def test_summarize_repo_hydrates_a_row_that_predates_the_identity_columns(
+    tmp_path,
+) -> None:
+    """The scanner's hash-only lookup reads NULL identity columns fine -- issue #13.
+
+    Whether that hydrated analysis is still valid for this run is decided by
+    `RepoMapApp._get_files_to_process()`, not here.
+    """
+    source = tmp_path / "sample.py"
+    source.write_text("def run():\n    pass\n", encoding="utf-8")
+    connection = load_cache(str(tmp_path))
+    scanned = summarize_repo(str(tmp_path), connection)
+    file_data = next(item for item in scanned if item["name"] == "sample.py")
+    _seed_cache_row(connection, "sample.py", file_data["hash"], "Cached description")
+    identity = connection.execute(
+        "SELECT model, contract_version FROM cache WHERE path = ?", ("sample.py",)
+    ).fetchone()
+
+    summary = summarize_repo(str(tmp_path), connection)
+    connection.close()
+
+    cached_file = next(item for item in summary if item["name"] == "sample.py")
+    assert identity == (None, None)
+    assert cached_file["description"] == "Cached description"
+
+
 def test_summarize_repo_keys_files_by_posix_relative_path(tmp_path) -> None:
     """Cache keys are relative and forward-slash separated; `path` stays absolute."""
     nested = tmp_path / "src" / "pkg"

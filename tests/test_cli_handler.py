@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -16,7 +17,8 @@ import repo_map.cli_handler as cli_module
 import repo_map.llm_service as llm_module
 from repo_map.cache_manager import CACHE_FILE_NAME, CacheError, load_cache
 from repo_map.cli_handler import RepoMapApp
-from repo_map.llm_service import AnalysisOutcome
+from repo_map.file_scanner import load_source_snapshot
+from repo_map.llm_service import ANALYSIS_CONTRACT_VERSION, AnalysisOutcome
 
 #: Variables that must not leak from the developer's shell into a CLI subprocess.
 INHERITED_SETTINGS_VARS = (
@@ -28,6 +30,27 @@ INHERITED_SETTINGS_VARS = (
 #: Accepted by the CLI's key check without ever reaching the network, because
 #: every failure exercised here aborts before the first OpenRouter request.
 PLACEHOLDER_API_KEY = "not-a-real-key"
+
+#: The model these cases analyze with, standing in for `--model`.
+ANALYZING_MODEL = "test-model"
+
+#: The cache table as it stood before analyses recorded the model and contract
+#: revision that produced them, for exercising the upgrade path.
+PRE_IDENTITY_SCHEMA = """
+    CREATE TABLE cache (
+        path TEXT PRIMARY KEY,
+        hash TEXT,
+        description TEXT,
+        developer_consideration TEXT,
+        imports TEXT,
+        functions TEXT,
+        maintenance_flag TEXT,
+        critical_dependencies TEXT,
+        architectural_role TEXT,
+        refactoring_suggestions TEXT,
+        security_assessment TEXT
+    )
+"""
 
 #: A response body that satisfies every field of the analysis contract.
 WELL_FORMED_ANALYSIS = {
@@ -87,22 +110,54 @@ def _assert_single_line_failure(
     assert expected in output, output
 
 
-def _cache_every_scanned_file(app: RepoMapApp, repository: Path) -> None:
-    """Record a validated analysis for every file the scanner reports."""
+def _cache_every_scanned_file(
+    app: RepoMapApp, repository: Path, model: str = ANALYZING_MODEL
+) -> None:
+    """Record a validated analysis for every file the scanner reports.
+
+    The identity fields are the ones `get_llm_descriptions()` stamps onto a
+    file it validated, without which the row cannot be written.
+    """
     for entry in cli_module.summarize_repo(str(repository), app.cache_conn):
         if entry["type"] == "file":
             entry["description"] = "cached"
+            entry["model"] = model
+            entry["contract_version"] = ANALYSIS_CONTRACT_VERSION
             app._update_cache_for_file(entry)
 
 
-def _pending_names(app: RepoMapApp, repository: Path) -> set[str]:
+def _pending_names(
+    app: RepoMapApp, repository: Path, model: str = ANALYZING_MODEL
+) -> set[str]:
     """Basenames of the files a fresh scan of ``repository`` would send to the LLM."""
     structure = cli_module.summarize_repo(str(repository), app.cache_conn)
-    return {Path(path).name for path in app._get_files_to_process(structure)}
+    return {Path(path).name for path in app._get_files_to_process(structure, model)}
 
 
 def _cache_keys(connection) -> set[str]:
     return {row[0] for row in connection.execute("SELECT path FROM cache")}
+
+
+def _cache_rows(repository: Path) -> list[tuple]:
+    """Every cache row as (key, model, contract revision, description)."""
+    connection = load_cache(str(repository))
+    rows = connection.execute(
+        "SELECT path, model, contract_version, description FROM cache ORDER BY path"
+    ).fetchall()
+    connection.close()
+    return rows
+
+
+def _seed_pre_identity_cache(repository: Path, key: str, file_hash: str) -> None:
+    """Write a cache database in the schema that predates the identity columns."""
+    connection = sqlite3.connect(repository / CACHE_FILE_NAME)
+    connection.execute(PRE_IDENTITY_SCHEMA)
+    connection.execute(
+        "INSERT INTO cache (path, hash, description) VALUES (?, ?, ?)",
+        (key, file_hash, "written by an older repo-map"),
+    )
+    connection.commit()
+    connection.close()
 
 
 def _stub_successful_analysis(monkeypatch) -> None:
@@ -112,6 +167,31 @@ def _stub_successful_analysis(monkeypatch) -> None:
         return {"choices": [{"message": {"content": json.dumps(WELL_FORMED_ANALYSIS)}}]}
 
     monkeypatch.setattr(llm_module, "rate_limited_api_call", analysis)
+
+
+def _recording_successful_analysis(monkeypatch) -> list[str]:
+    """Stub a successful analysis, returning the list of models actually requested."""
+    requested: list[str] = []
+
+    async def analysis(messages, model, temperature):
+        requested.append(model)
+        return {"choices": [{"message": {"content": json.dumps(WELL_FORMED_ANALYSIS)}}]}
+
+    monkeypatch.setattr(llm_module, "rate_limited_api_call", analysis)
+    return requested
+
+
+def _run_against(repository: Path, model: str) -> None:
+    """Run one full pass over ``repository`` with ``model``, as the CLI would."""
+    app = RepoMapApp()
+    app.args = argparse.Namespace(
+        repository_path=str(repository), yes=True, model=model, concurrency=3
+    )
+    app.cache_conn = load_cache(str(repository))
+    try:
+        asyncio.run(app._process_repository())
+    finally:
+        app.cache_conn.close()
 
 
 def _answers(monkeypatch, *responses: str) -> list[str]:
@@ -141,8 +221,8 @@ def test_get_files_to_process_uses_hash_cache(tmp_path) -> None:
     source = tmp_path / "module.py"
     connection = load_cache(str(tmp_path))
     connection.execute(
-        "INSERT INTO cache (path, hash) VALUES (?, ?)",
-        ("module.py", "current"),
+        "INSERT INTO cache (path, hash, model, contract_version) VALUES (?, ?, ?, ?)",
+        ("module.py", "current", ANALYZING_MODEL, ANALYSIS_CONTRACT_VERSION),
     )
     connection.commit()
     app = RepoMapApp()
@@ -174,7 +254,7 @@ def test_get_files_to_process_uses_hash_cache(tmp_path) -> None:
         },
     ]
 
-    pending = app._get_files_to_process(structure)
+    pending = app._get_files_to_process(structure, ANALYZING_MODEL)
     connection.close()
 
     assert pending == {str(tmp_path / "changed.py")}
@@ -201,7 +281,8 @@ def test_get_files_to_process_ignores_a_legacy_absolute_path_row(tmp_path) -> No
                 "source_eligible": True,
                 "hash": "current",
             }
-        ]
+        ],
+        ANALYZING_MODEL,
     )
     connection.close()
 
@@ -461,7 +542,7 @@ def test_enhancement_runs_concurrently_and_caches_completed_file(monkeypatch) ->
     monkeypatch.setattr(
         app,
         "_get_files_to_process",
-        lambda received: {item["path"] for item in received},
+        lambda received, model: {item["path"] for item in received},
     )
     monkeypatch.setattr(app, "_update_cache_for_file", cache_updates.append)
     monkeypatch.setattr(cli_module, "get_llm_descriptions", fake_description)
@@ -534,7 +615,7 @@ def test_enhancement_isolates_failures_and_caches_each_success_once(
     monkeypatch.setattr(
         app,
         "_get_files_to_process",
-        lambda received: {item["path"] for item in received},
+        lambda received, model: {item["path"] for item in received},
     )
     monkeypatch.setattr(app, "_update_cache_for_file", cache_updates.append)
     monkeypatch.setattr(cli_module, "get_llm_descriptions", fake_description)
@@ -600,7 +681,7 @@ def test_enhancement_isolates_a_raising_task_from_its_peers(
     monkeypatch.setattr(
         app,
         "_get_files_to_process",
-        lambda received: {item["path"] for item in received},
+        lambda received, model: {item["path"] for item in received},
     )
     monkeypatch.setattr(app, "_update_cache_for_file", cache_updates.append)
     monkeypatch.setattr(cli_module, "get_llm_descriptions", fake_description)
@@ -653,7 +734,7 @@ def test_malformed_response_shapes_leave_the_rest_of_the_pass_intact(
     pending = {
         Path(path).name
         for path in app._get_files_to_process(
-            cli_module.summarize_repo(str(tmp_path), app.cache_conn)
+            cli_module.summarize_repo(str(tmp_path), app.cache_conn), "test-model"
         )
     }
     app.cache_conn.close()
@@ -707,7 +788,7 @@ def test_cache_copied_into_a_fresh_checkout_is_reused(tmp_path) -> None:
     app = RepoMapApp()
     app.cache_conn = connection
     structure = cli_module.summarize_repo(str(checkout), connection)
-    pending = app._get_files_to_process(structure)
+    pending = app._get_files_to_process(structure, ANALYZING_MODEL)
     connection.close()
 
     cached_file = next(item for item in structure if item["name"] == "mod.py")
@@ -784,3 +865,202 @@ def test_two_legacy_rows_for_one_file_upgrade_without_a_unique_violation(
     connection.close()
 
     assert keys == {"mod.py"}
+
+
+def test_an_unchanged_file_is_requeued_under_a_different_model(tmp_path) -> None:
+    """A stored analysis belongs to the model that produced it -- issue #13."""
+    repository = tmp_path / "project"
+    (repository / "src").mkdir(parents=True)
+    (repository / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (repository / "src" / "nested.py").write_text("VALUE = 2\n", encoding="utf-8")
+    connection = load_cache(str(repository))
+    app = RepoMapApp()
+    app.cache_conn = connection
+    _cache_every_scanned_file(app, repository, model="vendor/model-a")
+
+    same_model = _pending_names(app, repository, model="vendor/model-a")
+    other_model = _pending_names(app, repository, model="vendor/model-b")
+    connection.close()
+
+    assert same_model == set()
+    assert other_model == {"mod.py", "nested.py"}
+
+
+@pytest.mark.parametrize(
+    "rerun_model",
+    [
+        pytest.param("Vendor/Model-A", id="case-variant"),
+        pytest.param("vendor/model-a-20260101", id="dated-pin"),
+        pytest.param("vendor/model", id="prefix"),
+        pytest.param(" vendor/model-a", id="leading-space"),
+        pytest.param("", id="empty"),
+    ],
+)
+def test_a_model_string_is_matched_verbatim(tmp_path, rerun_model: str) -> None:
+    """Anything but the exact recorded model is another model -- issue #13."""
+    (tmp_path / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    connection = load_cache(str(tmp_path))
+    app = RepoMapApp()
+    app.cache_conn = connection
+    _cache_every_scanned_file(app, tmp_path, model="vendor/model-a")
+
+    pending = _pending_names(app, tmp_path, model=rerun_model)
+    connection.close()
+
+    assert pending == {"mod.py"}
+
+
+def test_an_unchanged_file_is_requeued_after_a_contract_revision_bump(
+    tmp_path, monkeypatch
+) -> None:
+    """Bumping the contract invalidates analyses produced under the old one -- issue #13."""
+    (tmp_path / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    connection = load_cache(str(tmp_path))
+    app = RepoMapApp()
+    app.cache_conn = connection
+    _cache_every_scanned_file(app, tmp_path)
+
+    before_bump = _pending_names(app, tmp_path)
+    monkeypatch.setattr(
+        cli_module, "ANALYSIS_CONTRACT_VERSION", ANALYSIS_CONTRACT_VERSION + 1
+    )
+    after_bump = _pending_names(app, tmp_path)
+    connection.close()
+
+    assert before_bump == set()
+    assert after_bump == {"mod.py"}
+
+
+def test_a_model_change_reanalyzes_and_replaces_the_cached_row(
+    tmp_path, monkeypatch
+) -> None:
+    """The row is superseded in place, not duplicated and not pruned -- issue #13."""
+    requested = _recording_successful_analysis(monkeypatch)
+    (tmp_path / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    _run_against(tmp_path, "vendor/model-a")
+    first_run = list(requested)
+    requested.clear()
+    _run_against(tmp_path, "vendor/model-a")
+    repeat_run = list(requested)
+    requested.clear()
+    _run_against(tmp_path, "vendor/model-b")
+    changed_run = list(requested)
+
+    assert first_run == ["vendor/model-a"]
+    assert repeat_run == []
+    assert changed_run == ["vendor/model-b"]
+    assert _cache_rows(tmp_path) == [
+        ("mod.py", "vendor/model-b", ANALYSIS_CONTRACT_VERSION, "A module.")
+    ]
+
+
+def test_a_contract_revision_bump_reanalyzes_and_restamps_the_cached_row(
+    tmp_path, monkeypatch
+) -> None:
+    """The same model under a new contract revision is a miss -- issue #13."""
+    requested = _recording_successful_analysis(monkeypatch)
+    (tmp_path / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _run_against(tmp_path, "vendor/model-a")
+    requested.clear()
+
+    bumped = ANALYSIS_CONTRACT_VERSION + 1
+    monkeypatch.setattr(llm_module, "ANALYSIS_CONTRACT_VERSION", bumped)
+    monkeypatch.setattr(cli_module, "ANALYSIS_CONTRACT_VERSION", bumped)
+    _run_against(tmp_path, "vendor/model-a")
+
+    assert requested == ["vendor/model-a"]
+    assert _cache_rows(tmp_path) == [("mod.py", "vendor/model-a", bumped, "A module.")]
+
+
+def test_a_cache_without_identity_columns_upgrades_and_reanalyzes_once(
+    tmp_path, monkeypatch
+) -> None:
+    """A pre-upgrade database loads, reads as a miss, then settles -- issue #13."""
+    requested = _recording_successful_analysis(monkeypatch)
+    source = tmp_path / "mod.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    snapshot = load_source_snapshot(str(source), "Python")
+    assert snapshot is not None
+    _seed_pre_identity_cache(tmp_path, "mod.py", snapshot.sha256)
+
+    _run_against(tmp_path, "vendor/model-a")
+    upgrade_run = list(requested)
+    requested.clear()
+    _run_against(tmp_path, "vendor/model-a")
+
+    assert upgrade_run == ["vendor/model-a"]
+    assert requested == []
+    assert _cache_rows(tmp_path) == [
+        ("mod.py", "vendor/model-a", ANALYSIS_CONTRACT_VERSION, "A module.")
+    ]
+
+
+def test_a_failed_reanalysis_writes_no_row_and_leaves_the_stale_one_in_place(
+    tmp_path, monkeypatch
+) -> None:
+    """A miss the analysis cannot replace survives the prune and stays pending -- issue #13."""
+    (tmp_path / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    connection = load_cache(str(tmp_path))
+    app = RepoMapApp()
+    app.cache_conn = connection
+    _cache_every_scanned_file(app, tmp_path, model="vendor/model-a")
+
+    async def failed_analysis(messages, model, temperature):
+        return {"error": {"code": 500, "message": "failed"}}
+
+    monkeypatch.setattr(llm_module, "rate_limited_api_call", failed_analysis)
+    app.args = argparse.Namespace(
+        repository_path=str(tmp_path), yes=True, model="vendor/model-b", concurrency=3
+    )
+
+    asyncio.run(app._process_repository())
+    pending = _pending_names(app, tmp_path, model="vendor/model-b")
+    connection.close()
+
+    assert pending == {"mod.py"}
+    assert _cache_rows(tmp_path) == [
+        ("mod.py", "vendor/model-a", ANALYSIS_CONTRACT_VERSION, "cached")
+    ]
+
+
+def test_update_cache_for_file_persists_the_analysis_identity(tmp_path) -> None:
+    """Both identity values land on every successful write -- issue #13."""
+    connection = load_cache(str(tmp_path))
+    app = RepoMapApp()
+    app.cache_conn = connection
+
+    app._update_cache_for_file(
+        {
+            "rel_path": "src/mod.py",
+            "hash": "abc123",
+            "description": "A module.",
+            "model": "vendor/model-a",
+            "contract_version": ANALYSIS_CONTRACT_VERSION,
+        }
+    )
+    row = connection.execute(
+        "SELECT hash, model, contract_version FROM cache WHERE path = ?",
+        ("src/mod.py",),
+    ).fetchone()
+    connection.close()
+
+    assert row == ("abc123", "vendor/model-a", ANALYSIS_CONTRACT_VERSION)
+
+
+def test_update_cache_for_file_refuses_a_file_with_no_analysis_identity(
+    tmp_path,
+) -> None:
+    """No identity is invented for a file no analysis stamped -- issue #13."""
+    connection = load_cache(str(tmp_path))
+    app = RepoMapApp()
+    app.cache_conn = connection
+
+    with pytest.raises(KeyError):
+        app._update_cache_for_file(
+            {"rel_path": "src/mod.py", "hash": "abc123", "description": "A module."}
+        )
+    remaining = connection.execute("SELECT COUNT(*) FROM cache").fetchone()[0]
+    connection.close()
+
+    assert remaining == 0

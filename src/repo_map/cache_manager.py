@@ -70,7 +70,14 @@ def prune_cache(conn: sqlite3.Connection, scanned_keys: set[str]) -> int:
 
 
 def _apply_schema(conn: sqlite3.Connection) -> None:
-    """Create the cache table and add any columns a legacy database lacks."""
+    """Create the cache table and add any columns a legacy database lacks.
+
+    A column added to an existing table is `NULL` on every row already there,
+    which is what makes the upgrade non-destructive: no row is rewritten, and a
+    `NULL` identity column (`model`, `contract_version`) cannot equal a real
+    run's value, so a pre-upgrade row reads as a miss and is replaced by the
+    next successful analysis.
+    """
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -85,7 +92,9 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             critical_dependencies TEXT,
             architectural_role TEXT,
             refactoring_suggestions TEXT,
-            security_assessment TEXT
+            security_assessment TEXT,
+            model TEXT,
+            contract_version INTEGER
         )
         """)
 
@@ -101,6 +110,8 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
         "architectural_role": "TEXT",
         "refactoring_suggestions": "TEXT",
         "security_assessment": "TEXT",
+        "model": "TEXT",
+        "contract_version": "INTEGER",
     }
 
     for column, column_type in new_columns.items():

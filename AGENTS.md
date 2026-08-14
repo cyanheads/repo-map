@@ -33,7 +33,7 @@
 ## Execution Flow
 1. `run_main()` launches the async entrypoint (`src/repo_map/main.py`).
 2. `summarize_repo()` walks the tree, merges the repo root `.gitignore` with built-in defaults, records directories, and captures docstrings, imports, classes, functions, and constants for supported extensions (`src/repo_map/file_scanner.py`).
-3. Cached hashes short-circuit unchanged files; fresh files have structure extracted via `code_parser.py` helpers before LLM enhancement.
+3. Cached hashes short-circuit structure extraction for unchanged files; fresh files have structure extracted via `code_parser.py` helpers before LLM enhancement. Whether a cached *analysis* is reused is a separate check that also weighs the model and the analysis contract revision.
 4. `_enhance_summary_with_llm()` selects files the scanner marked `source_eligible`, queues them, and streams prompts through `llm_service.get_llm_descriptions()` to populate descriptions, developer considerations, maintenance flags, and key dependencies. Only a validated success is written to the cache; a failed analysis leaves the file pending for the next run.
 5. Responses update in-memory structures + cache, `_print_tree()` logs an ASCII map, and `_save_markdown_map()` writes `<repo>_repo_map.md` to disk.
 
@@ -54,8 +54,11 @@ The tool sends each file to the LLM with the repository tree as background and t
 
 The OpenRouter request sets `response_format: {"type": "json_object"}` to enforce structured output. The parser tolerates ```json fences from models that add them despite the instruction.
 
+`ANALYSIS_CONTRACT_VERSION` (same module) is the revision of that contract, and cached analyses are reused only when they were produced under it. Bump it whenever `SYSTEM_PROMPT`'s semantics or the field set validated by `_first_invalid_field()` changes; leave it alone for refactors that change neither. It is a manual constant rather than a prompt hash because the user message embeds the repository tree with prior descriptions, which shifts nearly every run.
+
 ## Key Modules
-- `src/repo_map/main.py` – CLI orchestration, disclaimer handling, persistence of results.
+- `src/repo_map/main.py` – entrypoint guard: configures logging, defers the application import so a settings failure is catchable, and maps top-level exceptions to exit codes.
+- `src/repo_map/cli_handler.py` – CLI orchestration, disclosure prompt, cache reads and writes, and the enhancement pass.
 - `src/repo_map/file_scanner.py` – repository walker, root `.gitignore` + default ignore aggregation, hash computation, and cache hydration.
 - `src/repo_map/code_parser.py` – language-aware extraction for Python/Java/JS/TS/C# plus import and docstring helpers.
 - `src/repo_map/llm_service.py` – OpenRouter client, concurrency semaphore, exponential backoff, response parsing, and generation of descriptions, developer considerations, maintenance flags, and key dependencies.
@@ -71,6 +74,9 @@ The OpenRouter request sets `response_format: {"type": "json_object"}` to enforc
 - Schema upgrades run automatically on load; delete the file to force a clean regeneration.
 - Descriptions, developer considerations, maintenance flags, key dependencies, imports, and functions are cached alongside hashes for reuse.
 - `hash` column stores SHA-256 of each processed file; updating source without deleting cache still reprocesses because hashes change.
+- `model` and `contract_version` record the analysis inputs behind each row. `_get_files_to_process()` reuses a row only when hash, model, and contract revision all match the current run, so a run with a different `--model` reanalyzes the same unchanged files instead of serving the earlier model's results.
+- A row that misses on model or contract revision is superseded by the next successful analysis, not pruned — its file is still in the scan. If that analysis fails, nothing is written and the file stays pending.
+- `ALTER TABLE ... ADD COLUMN` leaves pre-upgrade rows `NULL` in both identity columns, and `NULL` never equals a real run's values, so an older database upgrades with no backfill and simply reanalyzes once. The scanner's own hash-only lookup (`_process_file()`) reads those `NULL`s without touching them.
 
 ## Developer Workflows
 - Install/update the Poetry environment: `poetry install`.
@@ -85,7 +91,7 @@ The OpenRouter request sets `response_format: {"type": "json_object"}` to enforc
 - Add new file types via `SUPPORTED_LANGUAGES` in `src/repo_map/models.py`, and add the language to `NON_TEXT_LANGUAGES` when the format is binary or media, so its bytes are never sent to OpenRouter.
 - Provide language-specific structure/import extraction by expanding switch logic in `src/repo_map/code_parser.py`.
 - Adjust concurrency by modifying `Settings` defaults in `src/repo_map/config.py`. The OpenRouter endpoint and request headers are module constants there (`OPENROUTER_API_URL`, `HTTP_REFERER`, `APP_NAME`), deliberately not settings — `env_file` resolves against the working directory, so a `.env` in an analyzed repository must not be able to reach them.
-- To persist additional metadata, alter both the cache schema (`cache_manager.py`) and tree serialization in `main.py`.
+- To persist additional metadata, alter the cache schema (`cache_manager.py`), the read and write in `cli_handler.py`, and the tree serialization in `report_generator.py`.
 
 ## Troubleshooting
 - Missing API key: tool exits early; confirm `OPENROUTER_API_KEY` is exported before invoking.

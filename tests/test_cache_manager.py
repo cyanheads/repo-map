@@ -34,7 +34,35 @@ def test_load_cache_creates_current_schema(tmp_path) -> None:
         "architectural_role",
         "refactoring_suggestions",
         "security_assessment",
+        "model",
+        "contract_version",
     }
+
+
+def test_load_cache_adds_identity_columns_without_touching_existing_rows(
+    tmp_path,
+) -> None:
+    """Rows written before the identity columns survive and read NULL -- issue #13."""
+    connection = load_cache(str(tmp_path))
+    connection.execute("DROP TABLE cache")
+    connection.execute(
+        "CREATE TABLE cache (path TEXT PRIMARY KEY, hash TEXT, description TEXT)"
+    )
+    connection.execute(
+        "INSERT INTO cache (path, hash, description) VALUES (?, ?, ?)",
+        ("mod.py", "unchanged", "written by an older repo-map"),
+    )
+    connection.commit()
+    connection.close()
+
+    migrated = load_cache(str(tmp_path))
+    row = migrated.execute(
+        "SELECT hash, description, model, contract_version FROM cache WHERE path = ?",
+        ("mod.py",),
+    ).fetchone()
+    migrated.close()
+
+    assert row == ("unchanged", "written by an older repo-map", None, None)
 
 
 def test_load_cache_migrates_legacy_schema(tmp_path) -> None:

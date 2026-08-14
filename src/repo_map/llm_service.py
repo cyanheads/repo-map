@@ -61,6 +61,15 @@ def update_api_semaphore_limit(limit: int) -> None:
     rate_limiter.update_limit(limit)
 
 
+#: Revision of the analysis contract: `SYSTEM_PROMPT` together with the field
+#: set `_first_invalid_field()` validates. Cached analyses are reused only when
+#: they were produced under this revision, so bump it whenever either changes,
+#: and leave it alone for refactors that change neither. It is a manual
+#: constant rather than a hash of the prompt because the user message embeds
+#: the repository tree with prior descriptions, which shifts on nearly every
+#: run -- hashing it would invalidate the whole cache each time.
+ANALYSIS_CONTRACT_VERSION = 1
+
 SOURCE_BEGIN = "----- BEGIN UNTRUSTED TARGET FILE SOURCE -----"
 SOURCE_END = "----- END UNTRUSTED TARGET FILE SOURCE -----"
 
@@ -137,6 +146,10 @@ async def get_llm_descriptions(
     Re-reads the target file and requires its bytes to still hash to the value
     recorded during scanning, so a file edited mid-run is skipped rather than
     documented from stale content or cached under the wrong hash.
+
+    A validated result is stamped with the analysis inputs that produced it --
+    the model and `ANALYSIS_CONTRACT_VERSION` -- so the cache can tell a stored
+    success apart from one a later run's inputs would no longer accept.
     """
     snapshot = load_source_snapshot(
         file["path"], file.get("language"), file.get("hash")
@@ -188,7 +201,11 @@ async def get_llm_descriptions(
             logger.error("Unexpected response structure from LLM for %s.", file["path"])
             return AnalysisOutcome.FAILURE
 
-        return parse_llm_response(content, file)
+        outcome = parse_llm_response(content, file)
+        if outcome is AnalysisOutcome.SUCCESS:
+            file["model"] = model
+            file["contract_version"] = ANALYSIS_CONTRACT_VERSION
+        return outcome
 
     logger.error(
         "Failed to get descriptions for %s after %s retries.", file["name"], max_retries

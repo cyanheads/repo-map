@@ -148,6 +148,12 @@ def _process_file(
     what every disk read resolves (the process working directory is not
     necessarily the repository root), while ``rel_path`` is the portable cache
     key and is the only value the cache is ever queried or written with.
+
+    This lookup matches on the hash alone and ignores the row's ``model`` and
+    ``contract_version``. It decides only whether structure has to be
+    re-extracted from disk; whether a stored analysis is still valid is
+    ``RepoMapApp._get_files_to_process()``'s call, and any field hydrated here
+    from a row that fails it is overwritten by the analysis that follows.
     """
     language = _detect_language(full_path)
 

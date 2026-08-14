@@ -8,6 +8,7 @@ import pytest
 import repo_map.llm_service as llm_module
 from repo_map.file_scanner import load_source_snapshot
 from repo_map.llm_service import (
+    ANALYSIS_CONTRACT_VERSION,
     AnalysisOutcome,
     APIRateLimiter,
     _build_user_prompt,
@@ -353,6 +354,86 @@ def test_get_llm_descriptions_returns_failure_for_unfamiliar_payload_shape(
 
     assert outcome is AnalysisOutcome.FAILURE
     assert "description" not in file_data
+
+
+def test_a_validated_analysis_is_stamped_with_its_model_and_contract_revision(
+    tmp_path, monkeypatch
+) -> None:
+    """The inputs that produced a result travel with it, for the cache -- issue #13."""
+    file_data = _analysis_target(tmp_path)
+
+    async def fake_call(*args, **kwargs):
+        return {"choices": [{"message": {"content": json.dumps(_valid_payload())}}]}
+
+    monkeypatch.setattr(llm_module, "rate_limited_api_call", fake_call)
+
+    outcome = asyncio.run(
+        get_llm_descriptions([file_data], file_data, "vendor/model-a")
+    )
+
+    assert outcome is AnalysisOutcome.SUCCESS
+    assert file_data["model"] == "vendor/model-a"
+    assert file_data["contract_version"] == ANALYSIS_CONTRACT_VERSION
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        pytest.param(
+            {"error": {"code": 500, "message": "failed"}}, id="provider-error"
+        ),
+        pytest.param({"choices": []}, id="no-choices"),
+        pytest.param(
+            {"choices": [{"message": {"content": "not json"}}]}, id="unparseable"
+        ),
+        pytest.param(
+            {
+                "choices": [
+                    {"message": {"content": json.dumps({"description": "partial"})}}
+                ]
+            },
+            id="incomplete-contract",
+        ),
+        pytest.param({"choices": [{"finish_reason": "stop"}]}, id="unfamiliar-shape"),
+    ],
+)
+def test_a_failed_analysis_is_never_stamped(tmp_path, monkeypatch, response) -> None:
+    """An unstamped file cannot be cached, so a failure leaves no identity -- issue #13."""
+    file_data = _analysis_target(tmp_path)
+
+    async def fake_call(*args, **kwargs):
+        return response
+
+    monkeypatch.setattr(llm_module, "rate_limited_api_call", fake_call)
+
+    outcome = asyncio.run(
+        get_llm_descriptions([file_data], file_data, "vendor/model-a")
+    )
+
+    assert outcome is AnalysisOutcome.FAILURE
+    assert "model" not in file_data
+    assert "contract_version" not in file_data
+
+
+def test_a_source_that_changed_after_scanning_is_never_stamped(
+    tmp_path, monkeypatch
+) -> None:
+    """The staleness guard returns before any identity is attached -- issue #13."""
+    file_data = _analysis_target(tmp_path)
+    (tmp_path / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+    async def unexpected_request(*args, **kwargs):
+        raise AssertionError("stale source must not reach OpenRouter")
+
+    monkeypatch.setattr(llm_module, "rate_limited_api_call", unexpected_request)
+
+    outcome = asyncio.run(
+        get_llm_descriptions([file_data], file_data, "vendor/model-a")
+    )
+
+    assert outcome is AnalysisOutcome.FAILURE
+    assert "model" not in file_data
+    assert "contract_version" not in file_data
 
 
 def test_get_llm_descriptions_accepts_a_null_error_alongside_choices(

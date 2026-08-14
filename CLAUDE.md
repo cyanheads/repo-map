@@ -73,9 +73,11 @@ Cache files are created **inside the target repository**:
 - `.repo-map-cache.db` - SQLite database with SHA-256 hashes and LLM results
 - `.repo_map_structure.json` - Pre-enhancement structural data
 
-When files change, their hash changes and they're reprocessed. Delete `.repo-map-cache.db` to force full regeneration.
+A cached analysis is reused only while all three of its inputs still match: the file's hash, the model the run selected, and `ANALYSIS_CONTRACT_VERSION`. An edited file, a different `--model`, or a bumped contract revision each trigger reprocessing on their own; deleting `.repo-map-cache.db` forces full regeneration but none of them need it.
 
 Cache rows are keyed by repository-relative path in forward-slash form, so the database stays valid when the repository is renamed, cloned, or checked out at another prefix. A row written under the older absolute-path key matches nothing and reads as a miss. Each run ends by deleting rows whose key no file in that scan claims, which removes deleted files and any leftover absolute-path keys.
+
+Each row also records the `model` and `contract_version` that produced it. A row missing on that identity is replaced by the next successful analysis, not pruned — its file is still in the scan. Rows written before those columns existed hold `NULL`, which no run's values can equal, so the migration needs no backfill.
 
 ## Configuration
 
@@ -99,6 +101,8 @@ The tool sends each file to the LLM with the repository tree as background and t
 7. **`security_assessment`** (string | null) - Specific risk and mitigation, or null
 
 The request sets `response_format: {"type": "json_object"}` to enforce structured output. Prompt is defined as `SYSTEM_PROMPT` in [llm_service.py](src/repo_map/llm_service.py).
+
+`ANALYSIS_CONTRACT_VERSION` in the same module gates cache reuse against that contract. Bump it whenever `SYSTEM_PROMPT`'s semantics or the field set `_first_invalid_field()` validates changes, so analyses produced under the older contract are reanalyzed. A refactor that leaves both intact keeps the current revision.
 
 ## Adding Language Support
 

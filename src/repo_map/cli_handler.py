@@ -15,6 +15,7 @@ from repo_map.cache_manager import CacheError, load_cache, prune_cache
 from repo_map.config import settings
 from repo_map.file_scanner import summarize_repo
 from repo_map.llm_service import (
+    ANALYSIS_CONTRACT_VERSION,
     AnalysisOutcome,
     get_llm_descriptions,
     update_api_semaphore_limit,
@@ -118,7 +119,7 @@ class RepoMapApp:
         self, structure: list[dict[str, Any]], model_name: str
     ) -> None:
         """Enhance file entries with LLM-produced metadata."""
-        files_to_process = self._get_files_to_process(structure)
+        files_to_process = self._get_files_to_process(structure, model_name)
 
         tasks = [file for file in structure if file["path"] in files_to_process]
 
@@ -172,8 +173,19 @@ class RepoMapApp:
         if removed:
             logger.info("Removed %s cache entries with no matching file.", removed)
 
-    def _get_files_to_process(self, structure: list[dict[str, Any]]) -> set[str]:
+    def _get_files_to_process(
+        self, structure: list[dict[str, Any]], model_name: str
+    ) -> set[str]:
         """Determine which files need LLM enhancement based on cache state.
+
+        A stored analysis is reusable only when the inputs that produced it
+        still hold: the source hash, the model, and the analysis contract
+        revision. The same unchanged file is therefore reanalyzed when the run
+        selects another model or the contract is bumped, and a row written
+        before those columns existed carries `NULL` for both and can never
+        match. `model_name` is the model this run analyzes with, and is
+        required: defaulting it would compare a row against a model the run
+        never selected.
 
         Eligibility is the scanner's shared source policy, not parser output, so
         class-only modules and data or configuration files are candidates too.
@@ -181,15 +193,17 @@ class RepoMapApp:
         because that is what the analysis pass reads from disk.
         """
         assert self.cache_conn is not None
+        analysis_inputs = (model_name, ANALYSIS_CONTRACT_VERSION)
         cursor = self.cache_conn.cursor()
         files_to_process: set[str] = set()
         for item in structure:
             if item["type"] == "file" and item.get("source_eligible"):
                 cursor.execute(
-                    "SELECT hash FROM cache WHERE path = ?", (item["rel_path"],)
+                    "SELECT hash, model, contract_version FROM cache WHERE path = ?",
+                    (item["rel_path"],),
                 )
-                row = cursor.fetchone()
-                if not row or row[0] != item.get("hash", ""):
+                cached = cursor.fetchone()
+                if cached != (item.get("hash", ""), *analysis_inputs):
                     files_to_process.add(item["path"])
         return files_to_process
 
@@ -198,6 +212,11 @@ class RepoMapApp:
 
         `INSERT OR REPLACE` on the relative key also supersedes whatever the row
         held before, so an upgrade never has to rewrite a key in place.
+
+        `model` and `contract_version` are read without a fallback: only a
+        validated analysis reaches here, and `get_llm_descriptions()` stamps
+        both onto the file before reporting that success. A default would write
+        an identity no run produced and pin the row against reanalysis.
         """
         assert self.cache_conn is not None
         cursor = self.cache_conn.cursor()
@@ -214,9 +233,11 @@ class RepoMapApp:
                 critical_dependencies,
                 architectural_role,
                 refactoring_suggestions,
-                security_assessment
+                security_assessment,
+                model,
+                contract_version
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 file_data["rel_path"],
@@ -230,6 +251,8 @@ class RepoMapApp:
                 file_data.get("architectural_role", "Unknown"),
                 file_data.get("refactoring_suggestions", "None"),
                 file_data.get("security_assessment", "None"),
+                file_data["model"],
+                file_data["contract_version"],
             ),
         )
         self.cache_conn.commit()
