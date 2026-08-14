@@ -128,7 +128,21 @@ class RepoMapApp:
         async def enhance_file(
             file_data: dict[str, Any],
         ) -> tuple[dict[str, Any], AnalysisOutcome]:
-            outcome = await get_llm_descriptions(structure, file_data, model=model_name)
+            """Analyze one file, keeping any failure scoped to that file.
+
+            An exception escaping here surfaces at ``await completed`` below and
+            abandons every task the loop has not yet processed, including
+            responses that already arrived and are waiting their turn.
+            """
+            try:
+                outcome = await get_llm_descriptions(
+                    structure, file_data, model=model_name
+                )
+            except Exception:
+                logger.error(
+                    "Unexpected error analyzing %s:", file_data["path"], exc_info=True
+                )
+                return file_data, AnalysisOutcome.FAILURE
             return file_data, outcome
 
         pending = [asyncio.create_task(enhance_file(file)) for file in tasks]

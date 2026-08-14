@@ -2,6 +2,8 @@
 
 import argparse
 import asyncio
+import json
+import logging
 import os
 import subprocess
 import sys
@@ -10,6 +12,7 @@ from pathlib import Path
 import pytest
 
 import repo_map.cli_handler as cli_module
+import repo_map.llm_service as llm_module
 from repo_map.cache_manager import CACHE_FILE_NAME, CacheError, load_cache
 from repo_map.cli_handler import RepoMapApp
 from repo_map.llm_service import AnalysisOutcome
@@ -24,6 +27,17 @@ INHERITED_SETTINGS_VARS = (
 #: Accepted by the CLI's key check without ever reaching the network, because
 #: every failure exercised here aborts before the first OpenRouter request.
 PLACEHOLDER_API_KEY = "not-a-real-key"
+
+#: A response body that satisfies every field of the analysis contract.
+WELL_FORMED_ANALYSIS = {
+    "description": "A module.",
+    "developer_consideration": None,
+    "maintenance_flag": "Stable",
+    "critical_dependencies": {},
+    "architectural_role": "Utility",
+    "refactoring_suggestions": None,
+    "security_assessment": None,
+}
 
 
 def _console_script() -> list[str]:
@@ -473,3 +487,117 @@ def test_enhancement_isolates_failures_and_caches_each_success_once(
         "fast-success.py",
         "slow-success.py",
     ]
+
+
+@pytest.mark.parametrize("failure", [TypeError("bad payload"), KeyError("content")])
+def test_enhancement_isolates_a_raising_task_from_its_peers(
+    monkeypatch, caplog, failure
+) -> None:
+    """An exception the retry loop does not guard fails one file, not the pass."""
+    cache_updates = []
+    progress_steps = 0
+    structure = [
+        {
+            "path": f"/tmp/{name}.py",
+            "name": f"{name}.py",
+            "type": "file",
+            "source_eligible": True,
+        }
+        for name in ("fast-success", "raiser", "slow-success")
+    ]
+
+    async def fake_description(received_structure, file_data, model):
+        assert received_structure is structure
+        if file_data["name"] == "fast-success.py":
+            await asyncio.sleep(0.005)
+            return AnalysisOutcome.SUCCESS
+        if file_data["name"] == "raiser.py":
+            await asyncio.sleep(0.01)
+            raise failure
+        # Still awaiting its response when the raiser resolves.
+        await asyncio.sleep(0.03)
+        return AnalysisOutcome.SUCCESS
+
+    class Progress:
+        def __call__(self, **kwargs):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def update(self) -> None:
+            nonlocal progress_steps
+            progress_steps += 1
+
+        @staticmethod
+        def write(message: str) -> None:
+            return None
+
+    app = RepoMapApp()
+    monkeypatch.setattr(
+        app,
+        "_get_files_to_process",
+        lambda received: {item["path"] for item in received},
+    )
+    monkeypatch.setattr(app, "_update_cache_for_file", cache_updates.append)
+    monkeypatch.setattr(cli_module, "get_llm_descriptions", fake_description)
+    monkeypatch.setattr(cli_module, "tqdm", Progress())
+
+    with caplog.at_level(logging.ERROR, logger=cli_module.__name__):
+        asyncio.run(app._enhance_summary_with_llm(structure, "test-model"))
+
+    assert progress_steps == len(structure)
+    assert [item["name"] for item in cache_updates] == [
+        "fast-success.py",
+        "slow-success.py",
+    ]
+    assert "/tmp/raiser.py" in caplog.text
+
+
+def test_malformed_response_shapes_leave_the_rest_of_the_pass_intact(
+    tmp_path, monkeypatch
+) -> None:
+    """A payload shape the parser never reaches fails one file, not the report."""
+    names = ("early", "late", "no-content", "no-message")
+    for index, name in enumerate(names):
+        (tmp_path / f"{name}.py").write_text(f"VALUE = {index}\n", encoding="utf-8")
+
+    async def shaped_response(messages, model, temperature):
+        prompt = messages[1]["content"]
+        if "Target file: `no-content.py`" in prompt:
+            return {"choices": [{"message": {"role": "assistant"}}]}
+        if "Target file: `no-message.py`" in prompt:
+            return {"choices": [{"finish_reason": "stop"}]}
+        if "Target file: `late.py`" in prompt:
+            # Still awaiting its response when the malformed peers resolve.
+            await asyncio.sleep(0.05)
+        return {"choices": [{"message": {"content": json.dumps(WELL_FORMED_ANALYSIS)}}]}
+
+    monkeypatch.setattr(llm_module, "rate_limited_api_call", shaped_response)
+
+    app = RepoMapApp()
+    app.args = argparse.Namespace(
+        repository_path=str(tmp_path), yes=True, model="test-model", concurrency=3
+    )
+    app.cache_conn = load_cache(str(tmp_path))
+
+    asyncio.run(app._process_repository())
+
+    cached = {
+        Path(row[0]).name
+        for row in app.cache_conn.execute("SELECT path FROM cache").fetchall()
+    }
+    pending = {
+        Path(path).name
+        for path in app._get_files_to_process(
+            cli_module.summarize_repo(str(tmp_path), app.cache_conn)
+        )
+    }
+    app.cache_conn.close()
+
+    assert (tmp_path / f"{tmp_path.name}_repo_map.md").is_file()
+    assert cached == {"early.py", "late.py"}
+    assert pending == {"no-content.py", "no-message.py"}

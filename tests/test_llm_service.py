@@ -30,6 +30,24 @@ def _valid_payload(**overrides) -> dict:
     return payload
 
 
+def _analysis_target(tmp_path) -> dict:
+    """Write a real module and describe it the way the scanner would."""
+    source = tmp_path / "module.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    snapshot = load_source_snapshot(str(source), "Python")
+    assert snapshot is not None
+    return {
+        "path": str(source),
+        "name": "module.py",
+        "level": 0,
+        "type": "file",
+        "language": "Python",
+        "imports": [],
+        "functions": [],
+        "hash": snapshot.sha256,
+    }
+
+
 def test_parse_llm_response_normalizes_closed_fields() -> None:
     file_data = {"path": "/repo/module.py"}
     outcome = parse_llm_response(
@@ -299,3 +317,61 @@ def test_get_llm_descriptions_returns_failure_for_invalid_results(
 
     assert outcome is AnalysisOutcome.FAILURE
     assert "description" not in file_data
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        pytest.param({"choices": [{"finish_reason": "stop"}]}, id="no-message"),
+        pytest.param({"choices": [{"message": {"role": "bot"}}]}, id="no-content"),
+        pytest.param({"choices": [{"message": None}]}, id="null-message"),
+        pytest.param({"choices": [{"message": {"content": None}}]}, id="null-content"),
+        pytest.param({"choices": [{"message": {"content": 42}}]}, id="numeric-content"),
+        pytest.param(
+            {"choices": [{"message": {"content": _valid_payload()}}]},
+            id="unserialized-content",
+        ),
+        pytest.param({"choices": ["done"]}, id="choice-is-not-an-object"),
+        pytest.param({"choices": {"first": {}}}, id="choices-is-not-a-list"),
+        pytest.param({"error": "rate limited"}, id="error-is-not-an-object"),
+        pytest.param(["choices"], id="response-is-not-an-object"),
+        pytest.param(None, id="response-is-null"),
+    ],
+)
+def test_get_llm_descriptions_returns_failure_for_unfamiliar_payload_shape(
+    tmp_path, monkeypatch, response
+) -> None:
+    """An unrecognized provider payload is a failed analysis, never an exception."""
+    file_data = _analysis_target(tmp_path)
+
+    async def fake_call(*args, **kwargs):
+        return response
+
+    monkeypatch.setattr(llm_module, "rate_limited_api_call", fake_call)
+
+    outcome = asyncio.run(get_llm_descriptions([file_data], file_data, "test-model"))
+
+    assert outcome is AnalysisOutcome.FAILURE
+    assert "description" not in file_data
+
+
+def test_get_llm_descriptions_accepts_a_null_error_alongside_choices(
+    tmp_path, monkeypatch
+) -> None:
+    """Providers that report `error: null` on success are not read as failures."""
+    file_data = _analysis_target(tmp_path)
+
+    async def fake_call(*args, **kwargs):
+        return {
+            "error": None,
+            "choices": [
+                {"message": {"content": json.dumps(_valid_payload(description="Done"))}}
+            ],
+        }
+
+    monkeypatch.setattr(llm_module, "rate_limited_api_call", fake_call)
+
+    outcome = asyncio.run(get_llm_descriptions([file_data], file_data, "test-model"))
+
+    assert outcome is AnalysisOutcome.SUCCESS
+    assert file_data["description"] == "Done"

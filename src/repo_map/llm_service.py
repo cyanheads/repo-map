@@ -169,31 +169,53 @@ async def get_llm_descriptions(
             await asyncio.sleep(retry_after)
             continue
 
-        if "error" in response:
-            if response["error"].get("code") == 429:
+        if isinstance(response, dict) and (error := response.get("error")):
+            if isinstance(error, dict) and error.get("code") == 429:
                 if retry_count == max_retries - 1:
                     break
-                retry_after = response["error"].get("retry_after", 5) * (2**retry_count)
+                retry_after = error.get("retry_after", 5) * (2**retry_count)
                 logger.warning(
                     "Rate limit exceeded. Retrying after %s seconds...",
                     retry_after,
                 )
                 await asyncio.sleep(retry_after)
                 continue
-            logger.error("Error from OpenRouter LLM: %s", response["error"])
+            logger.error("Error from OpenRouter LLM: %s", error)
             return AnalysisOutcome.FAILURE
 
-        if response.get("choices"):
-            content = response["choices"][0]["message"]["content"].strip()
-            return parse_llm_response(content, file)
+        content = _choice_content(response)
+        if content is None:
+            logger.error("Unexpected response structure from LLM for %s.", file["path"])
+            return AnalysisOutcome.FAILURE
 
-        logger.error("Unexpected response structure from LLM.")
-        return AnalysisOutcome.FAILURE
+        return parse_llm_response(content, file)
 
     logger.error(
         "Failed to get descriptions for %s after %s retries.", file["name"], max_retries
     )
     return AnalysisOutcome.FAILURE
+
+
+def _choice_content(response: Any) -> str | None:
+    """Return the first choice's message text, or None for an unfamiliar shape.
+
+    A provider may answer with a payload this client has never seen, so every
+    hop down to the text is checked rather than indexed: an unrecognized shape
+    is a failed analysis for one file, not an exception that ends the run.
+    """
+    if not isinstance(response, dict):
+        return None
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        return None
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        return None
+    content = message.get("content")
+    return content.strip() if isinstance(content, str) else None
 
 
 def _build_user_prompt(
