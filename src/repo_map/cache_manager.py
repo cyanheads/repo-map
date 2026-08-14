@@ -6,11 +6,38 @@ import sqlite3
 
 logger = logging.getLogger(__name__)
 
+CACHE_FILE_NAME = ".repo-map-cache.db"
+
+
+class CacheError(RuntimeError):
+    """Raised when the repository cache cannot be opened or initialized."""
+
 
 def load_cache(repo_root: str) -> sqlite3.Connection:
-    """Load or initialize the SQLite cache database for a repository."""
-    cache_file_path = os.path.join(repo_root, ".repo-map-cache.db")
-    conn = sqlite3.connect(cache_file_path)
+    """Load or initialize the SQLite cache database for a repository.
+
+    Raises:
+        CacheError: The cache file is unreachable, unwritable, or not a
+            database. The message names the path and the remedy, so callers
+            report it rather than inspecting the underlying `sqlite3` failure.
+    """
+    cache_file_path = os.path.join(repo_root, CACHE_FILE_NAME)
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(cache_file_path)
+        _apply_schema(connection)
+    except (sqlite3.Error, OSError) as exc:
+        if connection is not None:
+            connection.close()
+        raise CacheError(
+            f"Cannot use the repo-map cache at {cache_file_path}: {exc}. "
+            f"Delete {CACHE_FILE_NAME} to force a clean rebuild."
+        ) from exc
+    return connection
+
+
+def _apply_schema(conn: sqlite3.Connection) -> None:
+    """Create the cache table and add any columns a legacy database lacks."""
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -49,4 +76,3 @@ def load_cache(repo_root: str) -> sqlite3.Connection:
             cursor.execute(f"ALTER TABLE cache ADD COLUMN {column} {column_type}")
 
     conn.commit()
-    return conn

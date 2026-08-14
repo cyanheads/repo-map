@@ -11,7 +11,7 @@ from typing import Any
 
 from tqdm import tqdm
 
-from repo_map.cache_manager import load_cache
+from repo_map.cache_manager import CacheError, load_cache
 from repo_map.config import settings
 from repo_map.file_scanner import summarize_repo
 from repo_map.llm_service import (
@@ -27,6 +27,18 @@ from repo_map.report_generator import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Scope claims here track `file_scanner.get_ignore_spec()` (root `.gitignore`
+# only) and `llm_service._build_user_prompt()` (the target file's complete
+# source), and match README.md's Configure section. Keep them in step.
+DISCLOSURE_PROMPT = (
+    "repo-map: Generates a summary of a repository, enhanced with AI.\n"
+    "Ignore rules come from the repository's root .gitignore only; "
+    ".gitignore files in subdirectories are not applied.\n"
+    "DISCLAIMER: The full text of each eligible file is sent to the "
+    "OpenRouter LLM for processing.\n"
+    "Proceed? [y/N]: "
+)
 
 
 class RepoMapApp:
@@ -62,7 +74,11 @@ class RepoMapApp:
             logger.warning("Operation cancelled by the user.")
             sys.exit(0)
 
-        self.cache_conn = load_cache(self.args.repository_path)
+        try:
+            self.cache_conn = load_cache(self.args.repository_path)
+        except CacheError as exc:
+            logger.error("%s", exc)
+            sys.exit(1)
 
         try:
             await self._process_repository()
@@ -181,19 +197,17 @@ class RepoMapApp:
         self.cache_conn.commit()
 
     def _confirm_disclaimer(self) -> bool:
-        """Prompt the user to acknowledge the LLM disclaimer."""
-        disclaimer_message = (
-            "repo-map: Generates a summary of a repository, enhanced with AI.\n"
-            "This tool uses .gitignore to exclude files.\n"
-            "DISCLAIMER: Files will be sent to the OpenRouter LLM for processing.\n"
-            "Proceed? [y/n]: "
-        )
+        """Prompt the user to acknowledge the upload disclosure.
+
+        Consent must be explicit: an empty answer takes the `[y/N]` default and
+        declines, so a stray newline on stdin cannot approve an upload.
+        """
         while True:
             try:
-                user_input = input(disclaimer_message).strip().lower()
-                if user_input in ("y", "yes", ""):
+                user_input = input(DISCLOSURE_PROMPT).strip().lower()
+                if user_input in ("y", "yes"):
                     return True
-                if user_input in ("n", "no"):
+                if user_input in ("", "n", "no"):
                     return False
                 print("Invalid input. Please enter 'y' or 'n'.")
             except (EOFError, KeyboardInterrupt):

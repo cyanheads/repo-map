@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 import repo_map.llm_service as llm_module
-from repo_map.config import Settings
+from repo_map.config import ConfigurationError, Settings, load_settings
 
 OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 BUILT_IN_REFERER = "https://github.com/cyanheads/repo-map"
@@ -130,6 +130,41 @@ def test_blank_api_key_is_not_treated_as_configured(scratch_cwd) -> None:
 def test_non_integer_concurrency_limit_is_rejected(scratch_cwd) -> None:
     """A malformed `API_SEMAPHORE_LIMIT` fails validation instead of silently defaulting."""
     (scratch_cwd / ".env").write_text("API_SEMAPHORE_LIMIT=many\n", encoding="utf-8")
+
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+@pytest.mark.parametrize("value", ["0", "abc"])
+def test_load_settings_reports_a_bad_limit_in_one_actionable_line(
+    scratch_cwd, value: str
+) -> None:
+    """The singleton's construction names the value and the valid range."""
+    (scratch_cwd / ".env").write_text(
+        f"API_SEMAPHORE_LIMIT={value}\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ConfigurationError) as failure:
+        load_settings()
+
+    message = str(failure.value)
+    assert "API_SEMAPHORE_LIMIT" in message
+    assert repr(value) in message
+    assert "must be an integer of 1 or greater" in message
+    assert "\n" not in message
+
+
+def test_configuration_error_is_reachable_from_the_import_boundary() -> None:
+    """`run_main()` guards its deferred import with `except ValueError`."""
+    assert issubclass(ConfigurationError, ValueError)
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_out_of_range_concurrency_limit_is_rejected(scratch_cwd, value: str) -> None:
+    """A concurrency limit below one fails validation rather than reaching a semaphore."""
+    (scratch_cwd / ".env").write_text(
+        f"API_SEMAPHORE_LIMIT={value}\n", encoding="utf-8"
+    )
 
     with pytest.raises(ValidationError):
         Settings()
