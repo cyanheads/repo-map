@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2026-08-13
+
+### Fixed
+- The tree's indentation prefixes were computed against the wrong ancestor depth, so a nested entry's vertical bar was dropped whenever its parent still had siblings below it — every repository with nesting rendered a wrong tree, in both the console and Markdown output. Prefixes now track open branches by depth as the tree renders ([#18](https://github.com/cyanheads/repo-map/issues/18)).
+- Model-authored text is now flattened to a single line before it enters a tree line. An embedded newline previously split one entry across several lines, and a code fence inside a description could close the generated Markdown report's own fence and throw the rest of the report outside it. The cache and `.repo_map_structure.json` still hold the raw, unflattened text ([#22](https://github.com/cyanheads/repo-map/issues/22)).
+
 ## [0.10.0] - 2026-08-13
 
 ### Security
