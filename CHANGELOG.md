@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2] - 2026-08-13
+
+### Fixed
+- Python `async def` was omitted from extraction, both at module level and as a class method; JavaScript class scope never closed, so a function declared after a class was folded into that class's method list; and the method pattern matched bare call expressions, reporting a call inside a method body as another method ([#12](https://github.com/cyanheads/repo-map/issues/12)).
+- Module-docstring extraction for the comment-based languages (Java, JavaScript, TypeScript, C++, C#, Ruby, Go, PHP) swept up every matching comment in the file instead of stopping at the end of the leading header block; it now reads only the leading `/** */` block or the leading run of `//` lines. The Python AST path was already correct ([#19](https://github.com/cyanheads/repo-map/issues/19)).
+- Import and method patterns missed common real declarations: scoped and hyphenated package specifiers (`@tanstack/react-query`, `date-fns`), semicolon-less imports, bare side-effect imports, `export … from` re-exports, `import static` targets, and static/generic-return/constructor methods in Java and C# ([#20](https://github.com/cyanheads/repo-map/issues/20)).
+
 ## [0.10.1] - 2026-08-13
 
 ### Fixed
