@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-08-13
+
+### Added
+- The cache now records the `model` and `contract_version` that produced each row, alongside `hash`. A stored analysis is reused only when all three match the current run, so reanalyzing an unchanged file under a different `--model` reanalyzes it instead of silently serving another model's cached result. `ANALYSIS_CONTRACT_VERSION` in `llm_service.py` is a manually incremented constant, bumped whenever `SYSTEM_PROMPT` or the validated field set changes ([#13](https://github.com/cyanheads/repo-map/issues/13)).
+
+### Changed
+- Rows written before the `model`/`contract_version` columns existed read `NULL` after the `ALTER TABLE` upgrade, which can never equal a real run's values, so every pre-existing row is treated as a miss and replaced by the next successful analysis — no backfill or rewrite required ([#13](https://github.com/cyanheads/repo-map/issues/13)).
+
 ## [0.12.0] - 2026-08-13
 
 ### Added
