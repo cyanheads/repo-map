@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     )
 
     openrouter_api_key: str | None = None
-    openrouter_model_name: str = "anthropic/claude-sonnet-4.6"
+    openrouter_model_name: str = "anthropic/claude-sonnet-5.5"
 
     # Concurrency limit for API calls
     api_semaphore_limit: int = Field(default=3, ge=1)

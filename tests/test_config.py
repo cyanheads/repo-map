@@ -69,7 +69,7 @@ def _capture_request(monkeypatch, settings: Settings) -> dict[str, Any]:
     monkeypatch.setattr(llm_module.aiohttp, "ClientSession", session_cls)
     monkeypatch.setattr(llm_module, "settings", settings)
 
-    asyncio.run(llm_module.rate_limited_api_call([], "test-model", 0.0))
+    asyncio.run(llm_module.rate_limited_api_call([], "test-model", "test-session"))
 
     return captured
 
@@ -116,7 +116,7 @@ def test_defaults_apply_without_env_file_or_environment(scratch_cwd) -> None:
 
     assert settings.openrouter_api_key is None
     assert settings.has_api_key() is False
-    assert settings.openrouter_model_name == "anthropic/claude-sonnet-4.6"
+    assert settings.openrouter_model_name == "anthropic/claude-sonnet-5.5"
     assert settings.api_semaphore_limit == 3
 
 
