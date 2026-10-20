@@ -19,8 +19,8 @@ mirrors instead of rewriting them:
   * File only in mirror → reported as an orphan, left in place, exit unaffected
   * Nothing is created, copied, or deleted, including absent mirror directories
 
-Run via ``poetry run python scripts.py sync-skills`` (sync),
-``poetry run python scripts.py check`` (check), or
+Run via ``uv run python scripts.py sync-skills`` (sync),
+``uv run python scripts.py check`` (check), or
 ``python3 scripts/sync_skills.py [--check]``.
 """
 
@@ -39,7 +39,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SKILLS_DIR = ROOT / "skills"
 MIRRORS = [ROOT / ".agents" / "skills", ROOT / ".claude" / "skills"]
 IGNORE_NAMES = {".DS_Store", "Thumbs.db"}
-SYNC_COMMAND = "poetry run python scripts.py sync-skills"
+SYNC_COMMAND = "uv run python scripts.py sync-skills"
 
 FindingKind = Literal["missing", "drifted", "orphan"]
 

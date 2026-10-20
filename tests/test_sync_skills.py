@@ -107,7 +107,7 @@ def test_check_fails_on_a_drifted_mirror_file(tmp_path, monkeypatch, capsys) -> 
     report = capsys.readouterr().err
     assert "drifted" in report
     assert ".claude/skills/alpha/reference/notes.md" in report
-    assert "poetry run python scripts.py sync-skills" in report
+    assert sync_skills.SYNC_COMMAND in report
 
 
 def test_check_fails_on_a_missing_mirror_file(tmp_path, monkeypatch, capsys) -> None:
@@ -123,7 +123,7 @@ def test_check_fails_on_a_missing_mirror_file(tmp_path, monkeypatch, capsys) -> 
     report = capsys.readouterr().err
     assert "missing" in report
     assert ".agents/skills/alpha/SKILL.md" in report
-    assert "poetry run python scripts.py sync-skills" in report
+    assert sync_skills.SYNC_COMMAND in report
 
 
 def test_check_fails_when_a_mirror_directory_is_absent(

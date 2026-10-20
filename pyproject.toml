@@ -1,35 +1,47 @@
-[tool.poetry]
+[project]
 name = "repo-map"
-version = "0.13.1"
+version = "0.14.0"
 description = "Generate a comprehensive summary and visualization of a repository structure, enhanced with AI-powered descriptions and developer considerations."
-authors = ["Cyanheads <casey@caseyjhand.com>"]
-license = "Apache-2.0"
 readme = "README.md"
-packages = [{ include = "repo_map", from = "src" }]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Cyanheads", email = "casey@caseyjhand.com" }]
+requires-python = ">=3.12"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+    "aiohttp>=3.14.5",
+    "certifi>=2026.7.22",
+    "pathspec>=1.1.1",
+    "pydantic>=2.14.1",
+    "pydantic-settings>=2.16.0",
+    "tqdm>=4.70.1",
+]
 
-[tool.poetry.urls]
-"Homepage" = "https://github.com/cyanheads/repo-map"
+[project.urls]
+Homepage = "https://github.com/cyanheads/repo-map"
 
-[tool.poetry.group.dev.dependencies]
-ruff = "*"
-black = "*"
-pytest = "*"
-
-[tool.poetry.dependencies]
-python = "^3.12"
-aiohttp = "^3.13.3"
-certifi = "^2026.2.25"
-pathspec = "^1.0.4"
-tqdm = "^4.67.3"
-pydantic = "^2.12.5"
-pydantic-settings = "^2.13.1"
-
-[tool.poetry.scripts]
+[project.scripts]
 repo-map = "repo_map.main:run_main"
 
+[dependency-groups]
+dev = [
+    "black>=26.10.1",
+    "pytest>=9.1.1",
+    "ruff>=0.17.1",
+]
+
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["uv_build>=0.12.23,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv]
+# Supply-chain cooldown: resolve only releases at least this old.
+exclude-newer = "3 days"
 
 [tool.ruff]
 line-length = 88

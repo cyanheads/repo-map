@@ -40,7 +40,7 @@ def run_check() -> None:
     run_check_skills()
     run_lint()
     run_tests()
-    _run(["poetry", "check", "--lock"])
+    _run(["uv", "lock", "--check"])
 
 
 def run_list_skills() -> None:
@@ -59,7 +59,7 @@ def run_sync_skills() -> None:
     """Propagate ``skills/`` to local agent-tool mirrors.
 
     Delegates to ``scripts/sync_skills.py`` so the same logic is reachable
-    without Poetry (e.g. from a Claude Code hook).
+    without uv (e.g. from a Claude Code hook).
     """
     _run([sys.executable, str(SYNC_SKILLS_SCRIPT)])
 
