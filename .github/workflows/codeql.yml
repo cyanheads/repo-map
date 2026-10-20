@@ -1,0 +1,48 @@
+# CodeQL static analysis — the one workflow this repository carries.
+# Verification (typecheck, lint, tests) is local; this file exists because CodeQL
+# is GitHub-owned end to end and a workflow file is visible in the repo where a
+# repo-level "default setup" is not. Default setup must be OFF for this to run.
+# Each language uploads under `/language:<language>`, default setup's category.
+# GitHub re-evaluates an alert only through analyses in the alert's own
+# category, so alerts default setup raised close here once the code is fixed.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '30 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, python]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}
