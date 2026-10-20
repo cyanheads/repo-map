@@ -170,7 +170,7 @@ def _get_braced_structure(
                 class_match = _CLASS_PATTERN.search(code)
                 if class_match:
                     current_class = class_match.group(1)
-                    classes[current_class] = []
+                    classes[class_match.group(1)] = []
                     class_depth = depth
                     depth += _net_brace_change(code)
                     class_body_opened = depth > class_depth
@@ -229,7 +229,7 @@ def get_javascript_structure(
                 class_match = _CLASS_PATTERN.search(code)
                 if class_match:
                     current_class = class_match.group(1)
-                    classes[current_class] = []
+                    classes[class_match.group(1)] = []
                     class_depth = depth
                     depth += _net_brace_change(code)
                     class_body_opened = depth > class_depth

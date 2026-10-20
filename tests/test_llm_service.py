@@ -142,7 +142,9 @@ def _file(path: str, level: int, **fields) -> dict:
 
 def _source_between_markers(prompt: str) -> str:
     """Return the text the prompt's own tagged markers enclose."""
-    tag = re.search(r"^<<<BEGIN SOURCE (\w+)>>>$", prompt, re.MULTILINE).group(1)
+    marker = re.search(r"^<<<BEGIN SOURCE (\w+)>>>$", prompt, re.MULTILINE)
+    assert marker is not None
+    tag = marker.group(1)
     begin, end = f"<<<BEGIN SOURCE {tag}>>>\n", f"\n<<<END SOURCE {tag}>>>"
     assert prompt.count(begin) == 1 and prompt.count(end) == 1
     return prompt[prompt.index(begin) + len(begin) : prompt.index(end)]
@@ -182,11 +184,13 @@ def test_every_file_in_a_run_shares_one_cacheable_system_prefix(
     """The prefix ignores the target and mid-run description updates."""
     first = _analysis_target(tmp_path)
     (tmp_path / "other.py").write_text("OTHER = 2\n", encoding="utf-8")
+    other = load_source_snapshot(str(tmp_path / "other.py"), "Python")
+    assert other is not None
     second = {
         **first,
         "path": str(tmp_path / "other.py"),
         "name": "other.py",
-        "hash": load_source_snapshot(str(tmp_path / "other.py"), "Python").sha256,
+        "hash": other.sha256,
     }
     structure = [first, second]
     requests = []

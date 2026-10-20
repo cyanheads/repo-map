@@ -322,8 +322,7 @@ def _build_repository_layout(structure: list[dict[str, Any]]) -> str:
     """
     entries = structure
     header = (
-        "Repository layout (names from the analyzed repository; "
-        "directories end in /):"
+        "Repository layout (names from the analyzed repository; directories end in /):"
     )
     if len(structure) > MAX_LAYOUT_ENTRIES:
         entries = [item for item in structure if item["type"] == "directory"]

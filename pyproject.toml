@@ -1,13 +1,17 @@
 [project]
 name = "repo-map"
 version = "0.14.0"
-description = "Generate a comprehensive summary and visualization of a repository structure, enhanced with AI-powered descriptions and developer considerations."
+description = "Map a repository as a Markdown tree with LLM-written notes on each file."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Cyanheads", email = "casey@caseyjhand.com" }]
 requires-python = ">=3.12"
+keywords = ["repository", "codebase", "documentation", "llm", "openrouter", "markdown", "cli"]
 classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Documentation",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -24,13 +28,16 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/cyanheads/repo-map"
+Repository = "https://github.com/cyanheads/repo-map"
+Issues = "https://github.com/cyanheads/repo-map/issues"
+Changelog = "https://github.com/cyanheads/repo-map/blob/main/CHANGELOG.md"
 
 [project.scripts]
 repo-map = "repo_map.main:run_main"
 
 [dependency-groups]
 dev = [
-    "black>=26.10.1",
+    "pyright>=1.1.414",
     "pytest>=9.1.1",
     "ruff>=0.17.1",
 ]
@@ -51,8 +58,11 @@ target-version = "py312"
 select = ["E", "F", "W", "I", "UP"]
 ignore = ["E501"]
 
-[tool.black]
-target-version = ["py312"]
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
