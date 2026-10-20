@@ -1,202 +1,95 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [0.14.0](changelog/0.14.x/0.14.0.md) — 2026-10-20 · 🛡️ Security
 
-## [0.13.1] - 2026-08-13
+Rewritten per-file analysis prompt with a smaller, cacheable request, on anthropic/claude-sonnet-5.5 by default
 
-### Changed
-- `poetry run python scripts.py check` no longer runs the mutating skill-mirror sync as its first step; it now runs `scripts/sync_skills.py --check`, which compares `skills/` against `.agents/skills/` and `.claude/skills/` by content hash and writes nothing. A missing or drifted mirror file fails the gate (non-zero exit), naming the file, its mirror, and the `sync-skills` command to fix it. A mirror-only file is reported as an orphan and left in place; it does not fail the gate ([#25](https://github.com/cyanheads/repo-map/issues/25)).
-- The mutating path is unchanged and still reachable via `poetry run python scripts.py sync-skills`, `python3 scripts/sync_skills.py`, and the `PostToolUse` hook in `.claude/settings.json`.
+## [0.13.1](changelog/0.13.x/0.13.1.md) — 2026-08-13
 
-## [0.13.0] - 2026-08-13
+Verified skill-mirror gate: the check command compares skill mirrors by content hash without writing, and fails on a missing or drifted mirror file
 
-### Added
-- The cache now records the `model` and `contract_version` that produced each row, alongside `hash`. A stored analysis is reused only when all three match the current run, so reanalyzing an unchanged file under a different `--model` reanalyzes it instead of silently serving another model's cached result. `ANALYSIS_CONTRACT_VERSION` in `llm_service.py` is a manually incremented constant, bumped whenever `SYSTEM_PROMPT` or the validated field set changes ([#13](https://github.com/cyanheads/repo-map/issues/13)).
+## [0.13.0](changelog/0.13.x/0.13.0.md) — 2026-08-13
 
-### Changed
-- Rows written before the `model`/`contract_version` columns existed read `NULL` after the `ALTER TABLE` upgrade, which can never equal a real run's values, so every pre-existing row is treated as a miss and replaced by the next successful analysis — no backfill or rewrite required ([#13](https://github.com/cyanheads/repo-map/issues/13)).
+Cache identity fingerprinting: a stored analysis is reused only when the file hash, model, and analysis contract version all match the current run
 
-## [0.12.0] - 2026-08-13
+## [0.12.0](changelog/0.12.x/0.12.0.md) — 2026-08-13
 
-### Added
-- Each scanned file entry now carries a `rel_path` field (repository-relative, forward-slash separated) alongside the absolute `path`, and `rel_path` also appears in the emitted `.repo_map_structure.json` ([#24](https://github.com/cyanheads/repo-map/issues/24)).
+Portable, self-pruning cache keyed by repository-relative path, with a rel_path field on scanned files and a pruning pass that drops stale rows
 
-### Changed
-- Cache rows are now keyed by repository-relative path instead of absolute path, so `.repo-map-cache.db` stays valid across a rename, a fresh clone, or a checkout at another prefix. A row written under the older absolute-path key matches nothing, reads as a miss, and is never rewritten in place — two absolute keys for the same file would otherwise collide on the same relative key ([#24](https://github.com/cyanheads/repo-map/issues/24)).
-- Each run now ends with a pruning pass (`prune_cache`) that deletes cache rows no scanned file claims, removing entries for deleted files and any leftover absolute-path rows from before this change ([#24](https://github.com/cyanheads/repo-map/issues/24)).
+## [0.11.1](changelog/0.11.x/0.11.1.md) — 2026-08-13
 
-## [0.11.1] - 2026-08-13
+Parser scope fixes and enrichment isolation: class patterns no longer match prose, Java and C# class scope closes correctly, and one malformed LLM response no longer aborts the enhancement pass
 
-### Fixed
-- The Java, JavaScript, TypeScript, and C# class pattern matched the bare word "class" anywhere on a line, so prose in a comment or a string literal produced phantom class entries and misattributed subsequent members to them. The pattern is now anchored to the start of a line, aware of declaration modifiers, annotations/attributes, and generics, and lines are stripped of string and comment content before matching ([#26](https://github.com/cyanheads/repo-map/issues/26)).
-- `get_java_structure` and `get_csharp_structure` never closed class scope, so every member parsed after a class declaration — however far past its closing brace — was attributed to that class instead of reported as a top-level function. Both extractors now track brace depth the same way `get_javascript_structure` already did, closing scope at the class body's closing brace ([#27](https://github.com/cyanheads/repo-map/issues/27)).
-- An OpenRouter response with an unfamiliar shape (a choice missing `message` or `content`, or any other malformed structure) raised past `get_llm_descriptions()` and `enhance_file()`, aborting the entire enhancement pass and silently discarding every file still in flight, including responses that had already arrived. The response shape is now defensively unwrapped and reported as a failed analysis for that file only, and `enhance_file()` catches any exception from `get_llm_descriptions()` at the per-file boundary so one file's failure never stops its peers ([#16](https://github.com/cyanheads/repo-map/issues/16)).
+## [0.11.0](changelog/0.11.x/0.11.0.md) — 2026-08-13
 
-## [0.11.0] - 2026-08-13
+Startup and consent hardening: invalid configuration and corrupt cache files exit with one actionable line, and the upload prompt discloses what is sent and requires an explicit yes
 
-### Fixed
-- `API_SEMAPHORE_LIMIT` set to `0` or a non-integer via the environment or `.env` crashed during import, before `run_main()`'s handler could ever run, because `Settings()` and the shared rate limiter were both constructed at module scope; a corrupt `.repo-map-cache.db` or an unwritable cache directory also escaped uncaught, since neither `sqlite3.OperationalError` nor `sqlite3.DatabaseError` subclasses the `RuntimeError` the top-level handler guarded. Settings construction now raises `ConfigurationError` (a `ValueError`) that `run_main()` catches around its deferred import, and `load_cache()` now raises `CacheError` naming the cache path and the rebuild remedy; both paths exit 1 with one actionable line and no traceback. The `--concurrency 0` and missing-directory error paths are unchanged ([#21](https://github.com/cyanheads/repo-map/issues/21)).
-- The upload disclosure prompt said only "Files will be sent" and "uses .gitignore to exclude files," understating that each eligible file's complete source is sent and that only the repository's root `.gitignore` is applied; it also accepted a bare Enter as consent. The prompt now states both facts and requires an explicit `y`/`yes` — an empty answer takes the new `[y/N]` default and declines ([#23](https://github.com/cyanheads/repo-map/issues/23)).
+## [0.10.2](changelog/0.10.x/0.10.2.md) — 2026-08-13
 
-## [0.10.2] - 2026-08-13
+Parser extraction fixes: async Python functions, JavaScript class scope, leading-header docstrings, and common import and method declarations
 
-### Fixed
-- Python `async def` was omitted from extraction, both at module level and as a class method; JavaScript class scope never closed, so a function declared after a class was folded into that class's method list; and the method pattern matched bare call expressions, reporting a call inside a method body as another method ([#12](https://github.com/cyanheads/repo-map/issues/12)).
-- Module-docstring extraction for the comment-based languages (Java, JavaScript, TypeScript, C++, C#, Ruby, Go, PHP) swept up every matching comment in the file instead of stopping at the end of the leading header block; it now reads only the leading `/** */` block or the leading run of `//` lines. The Python AST path was already correct ([#19](https://github.com/cyanheads/repo-map/issues/19)).
-- Import and method patterns missed common real declarations: scoped and hyphenated package specifiers (`@tanstack/react-query`, `date-fns`), semicolon-less imports, bare side-effect imports, `export … from` re-exports, `import static` targets, and static/generic-return/constructor methods in Java and C# ([#20](https://github.com/cyanheads/repo-map/issues/20)).
+## [0.10.1](changelog/0.10.x/0.10.1.md) — 2026-08-13
 
-## [0.10.1] - 2026-08-13
+Tree rendering fixes: correct indentation prefixes for nested entries and single-line model text so descriptions cannot break the tree or the Markdown report
 
-### Fixed
-- The tree's indentation prefixes were computed against the wrong ancestor depth, so a nested entry's vertical bar was dropped whenever its parent still had siblings below it — every repository with nesting rendered a wrong tree, in both the console and Markdown output. Prefixes now track open branches by depth as the tree renders ([#18](https://github.com/cyanheads/repo-map/issues/18)).
-- Model-authored text is now flattened to a single line before it enters a tree line. An embedded newline previously split one entry across several lines, and a code fence inside a description could close the generated Markdown report's own fence and throw the rest of the report outside it. The cache and `.repo_map_structure.json` still hold the raw, unflattened text ([#22](https://github.com/cyanheads/repo-map/issues/22)).
+## [0.10.0](changelog/0.10.x/0.10.0.md) — 2026-08-13 · ⚠️ Breaking · 🛡️ Security
 
-## [0.10.0] - 2026-08-13
+OpenRouter credential and upload-exclusion hardening: the endpoint and request headers are fixed constants instead of environment settings, and default exclusions cover more credential-bearing formats
 
-### Security
-- The OpenRouter endpoint and request headers are no longer read from `OPENROUTER_API_URL`, `HTTP_REFERER`, or `APP_NAME` in the environment or a `.env` file — they are fixed module constants. Previously, pydantic-settings resolved `env_file=".env"` against the process working directory, so a `.env` planted in an analyzed repository could redirect every request, carrying the real API key and each eligible file's full source, to an attacker-chosen host ([#17](https://github.com/cyanheads/repo-map/issues/17)).
-- The default exclusions now cover more credential-bearing formats: `.envrc`, `*.tfvars`, `*.tfstate`, `*.ini`, `*.conf`, `*.cfg`. Their complete text was previously eligible for upload to the LLM. A target repository that wants one of these documented can re-include it with a `.gitignore` negation, such as `!app.conf` ([#15](https://github.com/cyanheads/repo-map/issues/15)).
+## [0.9.1](changelog/0.9.x/0.9.1.md) — 2026-08-13
 
-### Fixed
-- Directory-only ignore patterns (e.g. `build/`) now prune the walk instead of emitting an empty node and scanning the subtree in full ([#14](https://github.com/cyanheads/repo-map/issues/14)).
+Transitive dependency bump: platformdirs 4.11.2 to 4.11.3 via the dev toolchain, with no call-site changes
 
-## [0.9.1] - 2026-08-13
+## [0.9.0](changelog/0.9.x/0.9.0.md) — 2026-08-13
 
-### Changed
-- platformdirs 4.11.2 → 4.11.3, transitive via the dev toolchain; repo-map does not import it, so no call sites changed.
+Source-grounded analysis: each eligible file's complete source is sent to the LLM as delimited untrusted data, responses are validated before caching, and enrichment eligibility follows the scanner's source policy
 
-## [0.9.0] - 2026-08-13
+## [0.8.3](changelog/0.8.x/0.8.3.md) — 2026-08-13
 
-### Added
-- Each eligible file's complete source is now sent to the LLM alongside its metadata, as explicitly delimited, untrusted data, so analysis is grounded in the file's actual content rather than only its extracted imports and symbols ([#10](https://github.com/cyanheads/repo-map/issues/10)). A file's source is uploaded only when it is a regular (non-symlinked) file in a supported text format, at most 64 KiB, free of NUL bytes, and valid UTF-8; oversized, binary, and unreadable files are never sent and never cached.
+Bounded concurrent analysis: file analyses are scheduled together and consumed in completion order, and HTTP 429 backoff happens outside the concurrency permit
 
-### Changed
-- `parse_llm_response` now validates every contract field before applying an LLM response to the cache; a partial or malformed response returns a failed outcome and leaves the file pending for the next run instead of writing incomplete data ([#6](https://github.com/cyanheads/repo-map/issues/6)).
-- File enrichment eligibility is now determined by the scanner's shared source policy rather than by parsed imports or functions, so class-only modules and data or configuration files are analyzed too ([#11](https://github.com/cyanheads/repo-map/issues/11)).
-- Ruff line length 120 → 88.
+## [0.8.2](changelog/0.8.x/0.8.2.md) — 2026-08-13
 
-### Removed
-- Unused `get_constants` helper from `code_parser.py`; `get_structure` already returns constants.
-- Unused `[tool.pylint."MESSAGES CONTROL"]` block from `pyproject.toml`.
+Symlinks are skipped during scanning, and language detection restores exact-filename and compound-suffix mappings
 
-## [0.8.3] - 2026-08-13
+## [0.8.1](changelog/0.8.x/0.8.1.md) — 2026-08-13
 
-### Fixed
-- Schedule eligible file analyses together and consume them in completion order, while preserving the configured request bound and updating each matching cache entry once ([#7](https://github.com/cyanheads/repo-map/issues/7)).
-- Return HTTP 429 retry metadata from each transport attempt and perform bounded backoff only after releasing the concurrency permit, with safe `Retry-After` fallback handling and no delay after the final attempt ([#8](https://github.com/cyanheads/repo-map/issues/8)).
+Baseline test suite, repaired development-command dispatcher, project-local workflows, dependency updates, and removal of unused tree-sitter dependencies
 
-## [0.8.2] - 2026-08-13
+## [0.8.0](changelog/0.8.x/0.8.0.md) — 2026-04-25 · ⚠️ Breaking
 
-### Fixed
-- Skip file and directory symlinks before scanner sorting or classification, preventing outside-root source from entering a map and stopping cycle links from repeating traversal ([#9](https://github.com/cyanheads/repo-map/issues/9)).
-- Detect languages by exact canonical filename followed by longest matching suffix, restoring `.gitignore`, `.envrc`, `Dockerfile`, and compound `.tfstate.backup` mappings without changing ordinary extension handling ([#5](https://github.com/cyanheads/repo-map/issues/5)).
+LLM contract reworked to a single JSON object with a closed architectural_role enum, default model changed to anthropic/claude-sonnet-4.6, and code_quality_score removed
 
-## [0.8.1] - 2026-08-13
+## [0.7.1](changelog/0.7.x/0.7.1.md) — 2026-04-25
 
-### Added
-- A 25-test baseline suite covering the cache, CLI orchestration, parsers, scanner, LLM service, report generation, and development commands. Eight strict expected-failure regressions track open issues #5–#12 and make unexpected passes release blockers.
-- Project-local maintenance, simplification, issue-reporting, and release workflows with synchronized Claude and Codex mirrors.
-- Structured GitHub bug and feature request forms.
+pathspec GitIgnoreSpec migration for closer Git ignore fidelity, a maintenance skill with automatic mirror sync, and in-range dependency updates
 
-### Changed
-- Repaired `scripts.py` as the development-command dispatcher for checks, formatting, tests, skill synchronization, and skill discovery; `poetry run python scripts.py check` is now the complete local gate.
-- Updated direct dependencies: aiohttp 3.13.5 → 3.14.3, certifi 2026.4.22 → 2026.7.22, pathspec 1.1.0 → 1.1.1, pydantic 2.13.3 → 2.13.4, pydantic-settings 2.14.0 → 2.15.0, tqdm 4.67.3 → 4.70.0, black 26.3.1 → 26.5.1, pytest 9.0.3 → 9.1.1, and ruff 0.15.12 → 0.16.3.
-- Simplified parser, scanner, retry-loop, and report-tree internals without changing behavior.
-- Refreshed contributor guidance, command documentation, and examples against the verified project layout and release process.
+## [0.7.0](changelog/0.7.x/0.7.0.md) — 2026-03-08
 
-### Removed
-- Unused `tree-sitter`, `tree-sitter-languages`, and `types-tqdm` dependencies. repo-map's parsers use Python's AST and language-specific regex extraction, so the former tree-sitter ABI blocker does not require a migration.
+Default model updated to google/gemini-3-flash-preview, CLAUDE.md added, dependency updates, Black formatting across all modules, and modernized type hints
 
-## [0.8.0] - 2026-04-25
+## [0.5.0](changelog/0.5.x/0.5.0.md) — 2025-09-29
 
-### Changed
-- `llm_service.py`: reworked the LLM contract from a flat text key-value block to a single JSON object. The OpenRouter request now sets `response_format: {"type": "json_object"}` for structured output, and `parse_llm_response` ingests JSON (tolerating ```` ```json ```` fences from non-compliant models). The user prompt is now built by `_build_user_prompt`, which emits a cleaner indented tree using paths relative to the repo root.
-- `llm_service.py`: closed-enum `architectural_role` with `_normalize_architectural_role`, snapping unknown roles to `Other`. `Service Layer` is now `Service`; added `Persistence`, `API Route`, `Test`, `Tooling`, `Other`.
-- `config.py`: default model changed from `google/gemini-3-flash-preview` to `anthropic/claude-sonnet-4.6`.
-- `report_generator.py`: dropped surrounding quotes from the `Developer Consideration:` tree line for cleaner output.
-- `AGENTS.md`, `CLAUDE.md`, `README.md`, `examples/example.md`: documentation refreshed to match the new JSON schema, default model, and tightened architectural role values.
+main.py split into cli_handler, logging_utils, and report_generator modules, plus a refreshed README and an example output
 
-### Removed
-- `code_quality_score` field across the LLM response schema, cache schema (`cache_manager.py`), insert/select paths (`cli_handler.py`, `file_scanner.py`), and tree rendering (`report_generator.py`). Existing caches retain the column harmlessly; new caches omit it.
+## [0.4.0](changelog/0.4.x/0.4.0.md) — 2025-09-29
 
-## [0.7.1] - 2026-04-25
+Comprehensive per-file LLM analysis covering developer considerations, architectural roles, and security assessments, with an extended cache schema and richer tree output
 
-### Added
-- `skills/maintenance/SKILL.md` — workflow for dependency updates, with auto-sync to `.agents/skills/` and `.claude/skills/` mirrors via `scripts/sync_skills.py` and a Claude Code `PostToolUse` hook in `.claude/settings.json`.
-- `sync-skills` Poetry script (`poetry run sync-skills`).
+## [0.3.0](changelog/0.3.x/0.3.0.md) — 2025-09-29
 
-### Changed
-- `file_scanner.py`: migrated `pathspec.PathSpec.from_lines("gitwildmatch", …)` → `pathspec.GitIgnoreSpec.from_lines(…)` for closer fidelity to Git's actual ignore semantics (especially negation patterns inside otherwise-ignored directories). The `gitwildmatch` alias has been deprecated since pathspec 1.0.
-- Updated dependencies (in-range): aiohttp 3.13.3→3.13.5, pathspec 1.0.4→1.1.0, pydantic 2.12.5→2.13.3, pydantic-settings 2.13.1→2.14.0, certifi 2026.2.25→2026.4.22, ruff 0.15.5→0.15.12, black 26.3.0→26.3.1, pytest 9.0.2→9.0.3, types-tqdm patch, plus transitive bumps.
+README updated to match the current default model, .gitignore handling, and main.py description
 
-### Deferred
-- `tree-sitter` 0.21.3 → 0.25.2 not taken: `tree-sitter-languages` 1.10.2 (last released 2024-02) bundles binary wheels built against the old tree-sitter ABI and would break at runtime. Proper fix is migrating off `tree-sitter-languages` to per-language packages (`tree-sitter-python`, `tree-sitter-javascript`, etc.) — separate work.
+## [0.2.0](changelog/0.2.x/0.2.0.md) — 2025-09-29
 
-## [0.7.0] - 2026-03-08
+RepoMapApp class refactor of main.py, progress-aware logging, more robust ignore-pattern handling, an APIRateLimiter, and AGENTS.md
 
-### Added
-- `CLAUDE.md` for Claude Code project guidance.
+## [0.1.0](changelog/0.1.x/0.1.0.md) — 2025-09-29
 
-### Changed
-- Updated default LLM model from `google/gemini-2.5-flash-preview-09-2025` to `google/gemini-3-flash-preview`.
-- Updated dependency versions: aiohttp, certifi, pathspec, tqdm, pydantic, pydantic-settings, types-tqdm.
-- Fixed ruff config to use `[tool.ruff.lint]` section for lint rules.
-- Applied Black formatting across all source modules.
-- Modernized type hints: `Optional[X]` → `X | None`.
-- Added `.python-version` to `.gitignore`.
+Poetry migration, modular project structure, SQLite caching, and multi-language code parsing
 
-## [0.5.0] - 2025-09-29
+## [0.0.1](changelog/0.0.x/0.0.1.md) — 2025-09-28
 
-### Changed
-- Refactored `main.py` by extracting logic into `cli_handler.py`, `logging_utils.py`, and `report_generator.py` for improved modularity.
-- Updated `README.md` with improved formatting, badges, and clearer instructions.
-- Bumped project version to `0.5.0`.
-
-### Added
-- `examples/example.md` to showcase a sample of the generated output.
-
-## [0.4.0] - 2025-09-29
-
-### Added
-- Comprehensive LLM analysis including developer considerations, maintenance flags, critical dependencies, architectural roles, code quality scores, refactoring suggestions, and security assessments.
-- Extended caching to store all new LLM-generated metadata.
-
-### Changed
-- `file_scanner.py`: Improved file processing to handle the new cached fields.
-- `llm_service.py`: Updated system prompt to generate a more detailed and structured analysis for each file.
-- `main.py`: Refactored to integrate the new LLM analysis and caching mechanisms, and enhanced the tree output to display the new metadata.
-- `cache_manager.py`: Expanded the cache schema to include the new analysis fields.
-- `AGENTS.md`: Updated documentation to reflect the new execution flow and module responsibilities.
-
-## [0.3.0] - 2025-09-29
-
-### Changed
-- Updated `README.md` to reflect recent changes, including the default model name, `.gitignore` handling, and the description of `main.py`.
-
-## [0.2.0] - 2025-09-29
-
-### Changed
-- Refactored `main.py` into a `RepoMapApp` class for better structure.
-- Improved logging with a `TqdmLoggingHandler`.
-- Enhanced `.gitignore` to include repo-map specific files.
-- Updated `file_scanner.py` for more robust ignore pattern handling.
-- Refactored `llm_service.py` with an `APIRateLimiter` class.
-
-### Added
-- `AGENTS.md` for developer onboarding.
-
-## [0.1.0] - 2025-09-29
-
-### Added
-- Converted project from setuptools to Poetry for dependency management.
-- Refactored monolithic script into a modular structure.
-- Added support for caching with SQLite.
-- Introduced multi-language support for code parsing.
-
-## [0.0.1] - 2025-09-28
-
-### Added
-- Initial commit.
+Initial commit
