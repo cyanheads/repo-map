@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 # Scope claims here track `file_scanner.get_ignore_spec()` (root `.gitignore`
 # only) and `llm_service._build_user_prompt()` (the target file's complete
-# source), and match README.md's Configure section. Keep them in step.
+# source), and match README.md's "What gets sent" section. Keep them in step.
 DISCLOSURE_PROMPT = (
     "repo-map: Generates a summary of a repository, enhanced with AI.\n"
     "Ignore rules come from the repository's root .gitignore only; "
@@ -278,7 +278,7 @@ class RepoMapApp:
     def _get_output_path(self) -> str:
         """Resolve the output path for the Markdown report."""
         assert self.args is not None
-        directory_name = os.path.basename(os.path.normpath(self.args.repository_path))
+        directory_name = os.path.basename(os.path.abspath(self.args.repository_path))
         output_file_name = f"{directory_name}_repo_map.md"
         return os.path.join(self.args.repository_path, output_file_name)
 

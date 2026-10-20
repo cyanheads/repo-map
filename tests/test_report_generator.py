@@ -303,6 +303,19 @@ def test_save_markdown_map_keeps_fenced_description_inside_the_block(tmp_path) -
     assert body[-1].startswith("└──────────────")
 
 
+def test_save_markdown_map_roots_a_relative_path_at_its_directory_name(
+    tmp_path, monkeypatch
+) -> None:
+    repository = tmp_path / "sample-repo"
+    repository.mkdir()
+    monkeypatch.chdir(repository)
+    markdown_path = tmp_path / "report.md"
+
+    save_markdown_map([], ".", str(markdown_path))
+
+    assert "/ (sample-repo)" in markdown_path.read_text(encoding="utf-8").splitlines()
+
+
 def test_save_json_map_preserves_raw_text(tmp_path) -> None:
     """Rendering normalization never reaches the JSON structure output."""
     description = "Line one\nLine two\twith a tab"

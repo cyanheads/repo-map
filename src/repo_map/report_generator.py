@@ -113,7 +113,7 @@ def save_markdown_map(
     structure: list[dict[str, Any]], repo_root: str, output_path: str
 ) -> None:
     """Persist the repository map to a Markdown file."""
-    repo_name = os.path.basename(os.path.normpath(repo_root))
+    repo_name = os.path.basename(os.path.abspath(repo_root))
     try:
         with open(output_path, "w", encoding="utf-8") as handle:
             handle.write("# Repository Map\n\n")

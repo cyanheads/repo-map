@@ -82,8 +82,8 @@ def _run_cli(
     """Run the console script the way a user does, in an isolated environment.
 
     ``cwd`` is a scratch directory so the project's own ``.env`` cannot supply
-    settings, and ``PYTHONOPTIMIZE`` is cleared for the same reason
-    ``scripts.py`` clears it.
+    settings, and ``PYTHONOPTIMIZE`` is cleared for the same reason the
+    ``Makefile`` clears it.
     """
     child_env = {
         name: value
@@ -118,6 +118,7 @@ def _cache_every_scanned_file(
     The identity fields are the ones `get_llm_descriptions()` stamps onto a
     file it validated, without which the row cannot be written.
     """
+    assert app.cache_conn is not None
     for entry in cli_module.summarize_repo(str(repository), app.cache_conn):
         if entry["type"] == "file":
             entry["description"] = "cached"
@@ -130,6 +131,7 @@ def _pending_names(
     app: RepoMapApp, repository: Path, model: str = ANALYZING_MODEL
 ) -> set[str]:
     """Basenames of the files a fresh scan of ``repository`` would send to the LLM."""
+    assert app.cache_conn is not None
     structure = cli_module.summarize_repo(str(repository), app.cache_conn)
     return {Path(path).name for path in app._get_files_to_process(structure, model)}
 
@@ -163,7 +165,7 @@ def _seed_pre_identity_cache(repository: Path, key: str, file_hash: str) -> None
 def _stub_successful_analysis(monkeypatch) -> None:
     """Answer every OpenRouter request with a contract-complete analysis."""
 
-    async def analysis(messages, model, temperature):
+    async def analysis(messages, model, session_id):
         return {"choices": [{"message": {"content": json.dumps(WELL_FORMED_ANALYSIS)}}]}
 
     monkeypatch.setattr(llm_module, "rate_limited_api_call", analysis)
@@ -173,7 +175,7 @@ def _recording_successful_analysis(monkeypatch) -> list[str]:
     """Stub a successful analysis, returning the list of models actually requested."""
     requested: list[str] = []
 
-    async def analysis(messages, model, temperature):
+    async def analysis(messages, model, session_id):
         requested.append(model)
         return {"choices": [{"message": {"content": json.dumps(WELL_FORMED_ANALYSIS)}}]}
 
@@ -214,6 +216,18 @@ def test_get_output_path_uses_repository_name(tmp_path) -> None:
     app.args = argparse.Namespace(repository_path=str(repository))
 
     assert app._get_output_path() == str(repository / "sample-repo_repo_map.md")
+
+
+def test_get_output_path_names_a_relative_path_after_its_directory(
+    tmp_path, monkeypatch
+) -> None:
+    repository = tmp_path / "sample-repo"
+    repository.mkdir()
+    monkeypatch.chdir(repository)
+    app = RepoMapApp()
+    app.args = argparse.Namespace(repository_path=".")
+
+    assert os.path.basename(app._get_output_path()) == "sample-repo_repo_map.md"
 
 
 def test_get_files_to_process_uses_hash_cache(tmp_path) -> None:
@@ -706,7 +720,7 @@ def test_malformed_response_shapes_leave_the_rest_of_the_pass_intact(
     for index, name in enumerate(names):
         (tmp_path / f"{name}.py").write_text(f"VALUE = {index}\n", encoding="utf-8")
 
-    async def shaped_response(messages, model, temperature):
+    async def shaped_response(messages, model, session_id):
         prompt = messages[1]["content"]
         if "Target file: `no-content.py`" in prompt:
             return {"choices": [{"message": {"role": "assistant"}}]}
@@ -1006,7 +1020,7 @@ def test_a_failed_reanalysis_writes_no_row_and_leaves_the_stale_one_in_place(
     app.cache_conn = connection
     _cache_every_scanned_file(app, tmp_path, model="vendor/model-a")
 
-    async def failed_analysis(messages, model, temperature):
+    async def failed_analysis(messages, model, session_id):
         return {"error": {"code": 500, "message": "failed"}}
 
     monkeypatch.setattr(llm_module, "rate_limited_api_call", failed_analysis)
