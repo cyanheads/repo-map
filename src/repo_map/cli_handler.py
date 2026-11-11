@@ -97,7 +97,8 @@ class RepoMapApp:
         pre_enhanced_path = os.path.join(
             self.args.repository_path, ".repo_map_structure.json"
         )
-        save_json_map(summary, pre_enhanced_path)
+        if not save_json_map(summary, pre_enhanced_path):
+            sys.exit(1)
 
         logger.info(
             "Enhancing repository summary with descriptions using OpenRouter LLM..."
@@ -110,7 +111,8 @@ class RepoMapApp:
         print_tree(summary)
 
         output_path = self._get_output_path()
-        save_markdown_map(summary, self.args.repository_path, output_path)
+        if not save_markdown_map(summary, self.args.repository_path, output_path):
+            sys.exit(1)
         logger.info(
             "Your repo-map has been saved to '%s'.", os.path.basename(output_path)
         )

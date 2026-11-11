@@ -342,11 +342,31 @@ def test_save_report_files(tmp_path) -> None:
     markdown_path = tmp_path / "map.md"
     json_path = tmp_path / "map.json"
 
-    save_markdown_map(structure, str(tmp_path), str(markdown_path))
-    save_json_map(structure, str(json_path))
+    assert save_markdown_map(structure, str(tmp_path), str(markdown_path))
+    assert save_json_map(structure, str(json_path))
 
     assert "# Repository Map" in markdown_path.read_text(encoding="utf-8")
     assert '"name": "README.md"' in json_path.read_text(encoding="utf-8")
+
+
+def test_save_report_files_reports_a_blocked_output_path(tmp_path) -> None:
+    """Regression: a blocked output path reports failure instead of success."""
+    structure = [
+        {
+            "name": "README.md",
+            "path": str(tmp_path / "README.md"),
+            "level": 0,
+            "type": "file",
+            "language": "Markdown",
+        }
+    ]
+    blocked_markdown = tmp_path / "map.md"
+    blocked_markdown.mkdir()
+    blocked_json = tmp_path / "map.json"
+    blocked_json.mkdir()
+
+    assert save_markdown_map(structure, str(tmp_path), str(blocked_markdown)) is False
+    assert save_json_map(structure, str(blocked_json)) is False
 
 
 def test_format_tree_lines_scales_linearly() -> None:

@@ -111,8 +111,13 @@ def print_tree(structure: list[dict[str, Any]]) -> None:
 
 def save_markdown_map(
     structure: list[dict[str, Any]], repo_root: str, output_path: str
-) -> None:
-    """Persist the repository map to a Markdown file."""
+) -> bool:
+    """Persist the repository map to a Markdown file.
+
+    Returns True when the report was written; False when the write
+    failed (the failure is logged). Callers must not report success
+    when this returns False.
+    """
     repo_name = os.path.basename(os.path.abspath(repo_root))
     try:
         with open(output_path, "w", encoding="utf-8") as handle:
@@ -125,13 +130,21 @@ def save_markdown_map(
             handle.write("```\n")
     except OSError as exc:
         logger.error("Error saving repository map: %s", exc)
+        return False
+    return True
 
 
-def save_json_map(structure: list[dict[str, Any]], output_path: str) -> None:
-    """Persist the raw structure to JSON."""
+def save_json_map(structure: list[dict[str, Any]], output_path: str) -> bool:
+    """Persist the raw structure to JSON.
+
+    Returns True when the file was written; False when the write
+    failed (the failure is logged).
+    """
     try:
         with open(output_path, "w", encoding="utf-8") as handle:
             json.dump(structure, handle, indent=4)
         logger.info("Pre-enhancement structure saved to '%s'.", output_path)
     except OSError as exc:
         logger.error("Error saving JSON structure map: %s", exc)
+        return False
+    return True
