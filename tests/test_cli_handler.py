@@ -506,6 +506,29 @@ def test_missing_target_directory_keeps_its_clean_error(tmp_path) -> None:
     _assert_single_line_failure(result, expected="is not a valid directory")
 
 
+def test_blocked_report_output_exits_nonzero_without_success_message(
+    tmp_path,
+) -> None:
+    """Regression: an unwritable report path fails instead of claiming success."""
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    # Block the Markdown report path with a directory (empty repo needs no LLM).
+    (repository / "repo_repo_map.md").mkdir()
+
+    result = _run_cli(
+        [str(repository), "-y"],
+        cwd=scratch,
+        env={"OPENROUTER_API_KEY": PLACEHOLDER_API_KEY},
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "Traceback (most recent call last)" not in output, output
+    assert "has been saved" not in output, output
+
+
 def test_enhancement_runs_concurrently_and_caches_completed_file(monkeypatch) -> None:
     active = 0
     peak = 0
