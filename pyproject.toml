@@ -1,6 +1,6 @@
 [project]
 name = "repo-map"
-version = "0.14.0"
+version = "0.15.0"
 description = "Map a repository as a Markdown tree with LLM-written notes on each file."
 readme = "README.md"
 license = "Apache-2.0"

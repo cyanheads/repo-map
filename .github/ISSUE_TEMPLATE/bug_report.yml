@@ -14,7 +14,7 @@ body:
     id: version
     attributes:
       label: repo-map version
-      placeholder: "0.14.0"
+      placeholder: "0.15.0"
     validations:
       required: true
 

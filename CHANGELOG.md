@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.15.0](changelog/0.15.x/0.15.0.md) — 2026-11-13 · 🛡️ Security
+
+Scanner no longer uploads private keys or credential files, the consent prompt states file count and size, and a run exits 1 when it leaves files unanalyzed
+
 ## [0.14.0](changelog/0.14.x/0.14.0.md) — 2026-10-20 · 🛡️ Security
 
 Rewritten per-file analysis prompt with a smaller, cacheable request, on anthropic/claude-sonnet-5.5 by default
