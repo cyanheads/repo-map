@@ -1,15 +1,18 @@
 """Scans the repository to identify and summarize files."""
 
+import codecs
 import hashlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import stat
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, replace
+from typing import Any, Self
 
 import pathspec
+from pathspec.patterns.gitignore.spec import GitIgnoreSpecPattern
 
 from repo_map.cache_manager import relative_cache_key
 from repo_map.code_parser import get_imports, get_module_docstring, get_structure
@@ -28,6 +31,11 @@ _LANGUAGE_SUFFIXES = tuple(
     )
 )
 
+# A PEM BEGIN line's label. The run is possessive and the closing dashes are a
+# lookahead, so each label is read once and those dashes can open the next line.
+_PEM_BEGIN_LABEL = re.compile(r"-----BEGIN ([A-Z0-9 ]*+)(?=-----)")
+_KEY_LABEL_SUFFIX = re.compile(r"[A-Z ]*")
+
 DEFAULT_IGNORE_PATTERNS = [
     ".git/",
     ".hg/",
@@ -42,13 +50,17 @@ DEFAULT_IGNORE_PATTERNS = [
     ".venv/",
     "venv/",
     "env/",
-    ".env",
-    ".envrc",
+    "*.env",
+    "*.envrc",
     "*.tfvars",
+    "*.tfvars.json",
     "*.tfstate",
+    "*.tfstate.*",
     "*.ini",
     "*.conf",
     "*.cfg",
+    "*secrets.toml",
+    "credentials.toml",
     "build/",
     "dist/",
     "*.egg-info/",
@@ -65,31 +77,179 @@ DEFAULT_IGNORE_PATTERNS = [
 
 @dataclass(frozen=True, slots=True)
 class SourceSnapshot:
-    """A complete eligible source file and the hash of its exact bytes."""
+    """A complete eligible source file, the hash of its exact bytes, and their count."""
 
     source: str
     sha256: str
+    size_bytes: int
 
 
-def get_ignore_spec(root_dir: str) -> pathspec.GitIgnoreSpec:
-    """Create a GitIgnoreSpec combining default patterns with the root .gitignore.
+def _read_rules(path: str) -> list[GitIgnoreSpecPattern]:
+    """Compile one rules file: a ``.gitignore`` or a ``.git/info/exclude``.
 
-    Uses ``GitIgnoreSpec`` (rather than ``PathSpec`` with the deprecated
-    ``"gitwildmatch"`` alias) so matching mirrors Git's actual behavior on
-    edge cases like negation inside ignored directories — important since the
-    point is to skip exactly what Git would skip.
+    Every rules file comes from the analyzed repository, so none can fail the
+    scan. A missing file has no rules; a non-regular or unreadable one is
+    skipped with a warning. Bytes that are not UTF-8 decode with
+    ``surrogateescape``, as ``os.scandir`` decodes such names, so a pattern
+    still matches the name it was written for. A leading byte-order mark is
+    dropped, as Git drops it, and a line that does not compile is dropped with
+    a warning while the others apply. Symlinks are followed: a rule can only
+    exclude more.
     """
-    patterns = list(DEFAULT_IGNORE_PATTERNS)
-    gitignore_path = os.path.join(root_dir, ".gitignore")
-    if os.path.exists(gitignore_path):
-        try:
-            with open(gitignore_path, encoding="utf-8") as handle:
-                patterns.extend(handle.read().splitlines())
-        except OSError as exc:
-            logger.warning("Could not read root .gitignore: %s", exc)
+    try:
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            logger.warning("Skipping ignore rules in %s: not a regular file", path)
+            return []
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    except OSError as exc:
+        logger.warning("Cannot read ignore rules in %s: %s", path, exc)
+        return []
 
-    filtered = [p for p in patterns if p.strip() and not p.strip().startswith("#")]
-    return pathspec.GitIgnoreSpec.from_lines(filtered)
+    text = raw.removeprefix(codecs.BOM_UTF8).decode("utf-8", errors="surrogateescape")
+    rules: list[GitIgnoreSpecPattern] = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        try:
+            rule = GitIgnoreSpecPattern(line)
+        except (ValueError, re.error) as exc:
+            logger.warning(
+                "Ignoring pattern %r on line %d of %s: %s", line, number, path, exc
+            )
+            continue
+        if rule.include is not None:
+            rules.append(rule)
+    return rules
+
+
+def _directory_rules(
+    directory: str, gitignore: list[GitIgnoreSpecPattern] | None = None
+) -> list[GitIgnoreSpecPattern]:
+    """A directory's ``.git/info/exclude`` rules, then its ``.gitignore`` rules.
+
+    The ``.gitignore`` comes last so it wins a conflict, as Git ranks every
+    ``.gitignore`` above ``info/exclude``. ``info/exclude`` exists only where
+    ``.git`` is a directory; a ``.git`` file (a linked worktree or submodule)
+    is never followed. ``gitignore`` passes rules the caller already read.
+    """
+    exclude = _read_rules(os.path.join(directory, ".git", "info", "exclude"))
+    if gitignore is None:
+        gitignore = _read_rules(os.path.join(directory, ".gitignore"))
+    return [*exclude, *gitignore]
+
+
+def _work_tree_top(root_dir: str) -> str | None:
+    """The nearest directory at or above ``root_dir`` that holds a ``.git`` entry."""
+    directory = root_dir
+    while not os.path.lexists(os.path.join(directory, ".git")):
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return None
+        directory = parent
+    return directory
+
+
+@dataclass(frozen=True, slots=True)
+class _IgnoreLevel:
+    """One directory's Git rules, matched against paths relative to it."""
+
+    base: str
+    """The directory relative to the work-tree top, ending in ``/`` (``""`` for the top)."""
+    spec: pathspec.GitIgnoreSpec
+
+
+def _level(base: str, rules: list[GitIgnoreSpecPattern]) -> tuple[_IgnoreLevel, ...]:
+    """``rules`` as the level at ``base``, or no level when there are none."""
+    return (_IgnoreLevel(base, pathspec.GitIgnoreSpec(rules)),) if rules else ()
+
+
+def _levels_exclude(levels: tuple[_IgnoreLevel, ...], path: str) -> bool:
+    """Whether the deepest level with a pattern matching ``path`` excludes it.
+
+    ``path`` is relative to the work-tree top and ends in ``/`` for a directory.
+    """
+    for level in reversed(levels):
+        include = level.spec.check_file(path[len(level.base) :]).include
+        if include is not None:
+            return include
+    return False
+
+
+@dataclass(frozen=True, slots=True)
+class _IgnoreRules:
+    """Decides which paths under the scanned root are excluded.
+
+    A path is excluded when either of two rule sets excludes it, so a rules
+    file below the root can narrow eligibility but never widen it:
+
+    - ``root``: ``DEFAULT_IGNORE_PATTERNS``, then the root ``.gitignore``, last
+      match winning. Only here can a negation re-include a default exclusion.
+    - ``levels``: Git's own precedence over ``.git/info/exclude`` and every
+      ``.gitignore`` from the work-tree top (the nearest directory at or above
+      the root holding a ``.git`` entry) down to the path's directory. The
+      deepest level with a matching pattern decides.
+
+    The index is never read, so a pattern applies whether or not Git tracks
+    the path. Neither is the global excludes file, so the outcome depends on
+    the repository alone, and nothing is executed.
+    """
+
+    root: pathspec.GitIgnoreSpec
+    prefix: str
+    """The scanned root relative to the work-tree top, ending in ``/`` (``""`` for the top)."""
+    levels: tuple[_IgnoreLevel, ...]
+
+    @classmethod
+    def for_root(cls, root_dir: str) -> Self:
+        """The rules at ``root_dir``, seeded with any enclosing work tree's."""
+        gitignore = _read_rules(os.path.join(root_dir, ".gitignore"))
+        defaults = [
+            GitIgnoreSpecPattern(pattern) for pattern in DEFAULT_IGNORE_PATTERNS
+        ]
+        top = _work_tree_top(root_dir) or root_dir
+        names = [] if top == root_dir else os.path.relpath(root_dir, top).split(os.sep)
+
+        levels: tuple[_IgnoreLevel, ...] = ()
+        for depth in range(len(names)):
+            base = "".join(f"{name}/" for name in names[:depth])
+            levels += _level(base, _directory_rules(os.path.join(top, *names[:depth])))
+        prefix = "".join(f"{name}/" for name in names)
+        if prefix and _levels_exclude(levels, prefix):
+            logger.warning(
+                "%s is ignored by the Git rules of the work tree at %s, "
+                "so nothing under it is scanned or sent.",
+                root_dir,
+                top,
+            )
+        levels += _level(prefix, _directory_rules(root_dir, gitignore))
+        return cls(pathspec.GitIgnoreSpec([*defaults, *gitignore]), prefix, levels)
+
+    def excludes(self, path: str) -> bool:
+        """Whether ``path``, root-relative and ending in ``/`` for a directory, is excluded."""
+        return self.root.match_file(path) or _levels_exclude(
+            self.levels, self.prefix + path
+        )
+
+    def descend(self, directory: str, path: str) -> Self:
+        """The rules inside ``directory``, whose root-relative ``path`` ends in ``/``."""
+        level = _level(self.prefix + path, _directory_rules(directory))
+        return replace(self, levels=self.levels + level) if level else self
+
+
+def _has_private_key_header(source: str) -> bool:
+    """Whether ``source`` holds a PEM BEGIN line that labels a private key.
+
+    Matches what ``-----BEGIN [A-Z0-9 ]*PRIVATE KEY[A-Z ]*-----`` matches, in
+    linear time: that pattern backtracks quadratically through a long label
+    of repeated ``PRIVATE KEY`` runs. Only a label's last run needs checking,
+    since every earlier run's suffix contains it.
+    """
+    for match in _PEM_BEGIN_LABEL.finditer(source):
+        _, key, suffix = match[1].rpartition("PRIVATE KEY")
+        if key and _KEY_LABEL_SUFFIX.fullmatch(suffix):
+            return True
+    return False
 
 
 def load_source_snapshot(
@@ -97,7 +257,15 @@ def load_source_snapshot(
     language: str | None,
     expected_hash: str | None = None,
 ) -> SourceSnapshot | None:
-    """Load a complete eligible UTF-8 source file without following symlinks."""
+    """Load a complete eligible UTF-8 source file without following symlinks.
+
+    Returns ``None`` for anything that must not be uploaded: an unsupported or
+    non-text language, a non-regular file, more than ``MAX_SOURCE_BYTES``, a
+    NUL byte, invalid UTF-8, a PEM private-key header, or bytes that no longer
+    hash to ``expected_hash``. The key check reads content, so no ignore-file
+    negation re-includes such a file, and a document that only quotes a key
+    header is skipped too.
+    """
     if language not in SUPPORTED_TEXT_LANGUAGES:
         return None
 
@@ -119,12 +287,18 @@ def load_source_snapshot(
     except UnicodeDecodeError:
         return None
 
+    if _has_private_key_header(source):
+        logger.warning(
+            "Skipping %s: its source contains a private key header", file_path
+        )
+        return None
+
     source_hash = hashlib.sha256(raw_source).hexdigest()
     if expected_hash is not None and source_hash != expected_hash:
         logger.warning("Source file changed after scanning; skipping %s", file_path)
         return None
 
-    return SourceSnapshot(source=source, sha256=source_hash)
+    return SourceSnapshot(source=source, sha256=source_hash, size_bytes=len(raw_source))
 
 
 def _detect_language(file_path: str) -> str | None:
@@ -152,7 +326,7 @@ def _process_file(
     This lookup matches on the hash alone and ignores the row's ``model`` and
     ``contract_version``. It decides only whether structure has to be
     re-extracted from disk; whether a stored analysis is still valid is
-    ``RepoMapApp._get_files_to_process()``'s call, and any field hydrated here
+    ``cli_handler.plan_upload()``'s call, and any field hydrated here
     from a row that fails it is overwritten by the analysis that follows.
     """
     language = _detect_language(full_path)
@@ -176,6 +350,7 @@ def _process_file(
 
     file_hash = snapshot.sha256
     file_info["source_eligible"] = True
+    file_info["size_bytes"] = snapshot.size_bytes
     cursor = cache_conn.cursor()
     cursor.execute(
         """
@@ -241,13 +416,16 @@ def summarize_repo(
 
     Directory candidates are matched with a trailing separator so directory-only
     ignore patterns (``build/``) apply to them, pruning the walk instead of
-    emitting an empty node and discarding the subtree one file at a time.
+    emitting an empty node and discarding the subtree one file at a time. A
+    pruned directory is never read, its rules files included; each directory
+    that is entered adds its own rules (``_IgnoreRules``) for the entries below.
     """
     summary: list[dict[str, Any]] = []
     abs_root_dir = os.path.abspath(root_dir)
-    ignore_spec = get_ignore_spec(abs_root_dir)
 
-    def _scan(current_path: str, level: int) -> None:
+    def _scan(
+        current_path: str, relative_dir: str, level: int, rules: _IgnoreRules
+    ) -> None:
         try:
             with os.scandir(current_path) as directory:
                 entries = [entry for entry in directory if not entry.is_symlink()]
@@ -264,11 +442,10 @@ def summarize_repo(
 
         for entry in entries:
             full_path = entry.path
-            relative_path = os.path.relpath(full_path, abs_root_dir)
             is_directory = entry.is_dir(follow_symlinks=False)
-
+            relative_path = f"{relative_dir}{entry.name}"
             candidate = f"{relative_path}/" if is_directory else relative_path
-            if ignore_spec.match_file(candidate):
+            if rules.excludes(candidate):
                 continue
 
             if is_directory:
@@ -280,7 +457,9 @@ def summarize_repo(
                         "type": "directory",
                     }
                 )
-                _scan(full_path, level + 1)
+                _scan(
+                    full_path, candidate, level + 1, rules.descend(full_path, candidate)
+                )
             elif entry.is_file(follow_symlinks=False):
                 summary.append(
                     _process_file(
@@ -291,5 +470,5 @@ def summarize_repo(
                     )
                 )
 
-    _scan(abs_root_dir, 0)
+    _scan(abs_root_dir, "", 0, _IgnoreRules.for_root(abs_root_dir))
     return summary

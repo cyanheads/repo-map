@@ -418,6 +418,32 @@ export * from "./local"
     assert get_imports(source, "JavaScript") == ["date-fns", "lodash", "./local"]
 
 
+def test_typescript_imports_accept_type_only_imports_from_es_modules(tmp_path) -> None:
+    source = _write(
+        tmp_path,
+        "mod.mts",
+        """import type { T } from './t.mjs'
+export type { U } from "./u.mts";
+""",
+    )
+
+    assert get_imports(source, "TypeScript") == ["./t.mjs", "./u.mts"]
+
+
+def test_javascript_imports_skip_commonjs_require_calls(tmp_path) -> None:
+    """A `.cjs` file contributes only its ES module syntax lines."""
+    source = _write(
+        tmp_path,
+        "server.cjs",
+        """const local = require('./local.cjs')
+const { format } = require("date-fns");
+import Default from './default.mjs'
+""",
+    )
+
+    assert get_imports(source, "JavaScript") == ["./default.mjs"]
+
+
 def test_typescript_imports_ignore_non_import_statements(tmp_path) -> None:
     source = _write(
         tmp_path,
