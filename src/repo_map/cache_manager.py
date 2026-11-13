@@ -3,6 +3,7 @@
 import logging
 import os
 import sqlite3
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -25,15 +26,50 @@ def load_cache(repo_root: str) -> sqlite3.Connection:
     connection: sqlite3.Connection | None = None
     try:
         connection = sqlite3.connect(cache_file_path)
-        _apply_schema(connection)
+        added_columns = _apply_schema(connection)
     except (sqlite3.Error, OSError) as exc:
         if connection is not None:
             connection.close()
-        raise CacheError(
-            f"Cannot use the repo-map cache at {cache_file_path}: {exc}. "
-            f"Delete {CACHE_FILE_NAME} to force a clean rebuild."
-        ) from exc
+        raise _cache_error(cache_file_path, exc) from exc
+    for column in added_columns:
+        logger.info("Adding missing cache column '%s'", column)
     return connection
+
+
+def load_cache_snapshot(repo_root: str) -> sqlite3.Connection:
+    """Copy a repository's cache into memory without writing to the repository.
+
+    What a run reads before the user consents to an upload, and all a dry run
+    ever reads. The file is opened read-only and copied whole, so a read-only
+    target works and the file keeps its exact bytes: an older schema is
+    migrated in the copy alone, and nothing written to the copy reaches disk.
+    An absent file yields an empty cache, and none is created.
+
+    Raises:
+        CacheError: As `load_cache()`, with the same message.
+    """
+    cache_file_path = os.path.join(repo_root, CACHE_FILE_NAME)
+    snapshot = sqlite3.connect(":memory:")
+    try:
+        if os.path.exists(cache_file_path):
+            source_uri = f"{Path(cache_file_path).absolute().as_uri()}?mode=ro"
+            source = sqlite3.connect(source_uri, uri=True)
+            try:
+                source.backup(snapshot)
+            finally:
+                source.close()
+        _apply_schema(snapshot)
+    except (sqlite3.Error, OSError) as exc:
+        snapshot.close()
+        raise _cache_error(cache_file_path, exc) from exc
+    return snapshot
+
+
+def _cache_error(cache_file_path: str, exc: Exception) -> CacheError:
+    return CacheError(
+        f"Cannot use the repo-map cache at {cache_file_path}: {exc}. "
+        f"Delete {CACHE_FILE_NAME} to force a clean rebuild."
+    )
 
 
 def relative_cache_key(repo_root: str, file_path: str) -> str:
@@ -69,8 +105,11 @@ def prune_cache(conn: sqlite3.Connection, scanned_keys: set[str]) -> int:
     return len(orphaned)
 
 
-def _apply_schema(conn: sqlite3.Connection) -> None:
+def _apply_schema(conn: sqlite3.Connection) -> list[str]:
     """Create the cache table and add any columns a legacy database lacks.
+
+    Returns the columns it added, for the caller to report when the database
+    is the repository's own rather than an in-memory copy.
 
     A column added to an existing table is `NULL` on every row already there,
     which is what makes the upgrade non-destructive: no row is rewritten, and a
@@ -114,9 +153,9 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
         "contract_version": "INTEGER",
     }
 
-    for column, column_type in new_columns.items():
-        if column not in existing_columns:
-            logger.info("Adding missing cache column '%s'", column)
-            cursor.execute(f"ALTER TABLE cache ADD COLUMN {column} {column_type}")
+    added = [column for column in new_columns if column not in existing_columns]
+    for column in added:
+        cursor.execute(f"ALTER TABLE cache ADD COLUMN {column} {new_columns[column]}")
 
     conn.commit()
+    return added

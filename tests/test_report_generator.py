@@ -4,6 +4,8 @@ import json
 import time
 from typing import Any
 
+import pytest
+
 from repo_map.report_generator import (
     format_tree_lines,
     save_json_map,
@@ -314,6 +316,15 @@ def test_save_markdown_map_roots_a_relative_path_at_its_directory_name(
     save_markdown_map([], ".", str(markdown_path))
 
     assert "/ (sample-repo)" in markdown_path.read_text(encoding="utf-8").splitlines()
+
+
+def test_save_markdown_map_raises_when_the_report_cannot_be_written(tmp_path) -> None:
+    """The caller decides what a failed write means for the run, so it must see it."""
+    blocked = tmp_path / "report.md"
+    blocked.mkdir()
+
+    with pytest.raises(OSError):
+        save_markdown_map([_file("mod.py", 0)], str(tmp_path), str(blocked))
 
 
 def test_save_json_map_preserves_raw_text(tmp_path) -> None:

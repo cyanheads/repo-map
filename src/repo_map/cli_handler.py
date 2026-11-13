@@ -6,18 +6,27 @@ import json
 import logging
 import os
 import sqlite3
-import sys
+from collections.abc import Sequence
+from contextlib import closing
+from dataclasses import dataclass
 from typing import Any
 
 from tqdm import tqdm
 
-from repo_map.cache_manager import CacheError, load_cache, prune_cache
+from repo_map.cache_manager import (
+    CacheError,
+    load_cache,
+    load_cache_snapshot,
+    prune_cache,
+)
 from repo_map.config import settings
 from repo_map.file_scanner import summarize_repo
 from repo_map.llm_service import (
     ANALYSIS_CONTRACT_VERSION,
     AnalysisOutcome,
+    FatalOpenRouterError,
     get_llm_descriptions,
+    resolve_response_format,
     update_api_semaphore_limit,
 )
 from repo_map.logging_utils import setup_logging
@@ -29,17 +38,86 @@ from repo_map.report_generator import (
 
 logger = logging.getLogger(__name__)
 
-# Scope claims here track `file_scanner.get_ignore_spec()` (root `.gitignore`
-# only) and `llm_service._build_user_prompt()` (the target file's complete
-# source), and match README.md's "What gets sent" section. Keep them in step.
+# The consent prompt, filled with `UploadPlan.summary()`. Its claims are made
+# true elsewhere and change with that code: what each request carries is
+# `llm_service._build_messages()` (the repository layout, notes on related
+# files, and the target file's complete source), and which ignore files apply
+# is `file_scanner._IgnoreRules` (the defaults, every `.gitignore` from the
+# work-tree top down, `.git/info/exclude`, never the global excludes file).
+# README.md's "What gets sent" section says the same; keep all three in step.
 DISCLOSURE_PROMPT = (
-    "repo-map: Generates a summary of a repository, enhanced with AI.\n"
-    "Ignore rules come from the repository's root .gitignore only; "
-    ".gitignore files in subdirectories are not applied.\n"
-    "DISCLAIMER: The full text of each eligible file is sent to the "
-    "OpenRouter LLM for processing.\n"
-    "Proceed? [y/N]: "
+    "{summary}\n"
+    "Ignore rules come from repo-map's defaults, the repository's .gitignore files at every level, and .git/info/exclude; git's global excludes file is not read.\n"
+    "Run with --dry-run to list the files. Proceed? [y/N]: "
 )
+
+
+def _files(count: int) -> str:
+    return "1 file" if count == 1 else f"{count} files"
+
+
+@dataclass(frozen=True, slots=True)
+class UploadPlan:
+    """What a run sends: the files with no reusable analysis, and how many keep one.
+
+    ``pending`` holds the scanned entries themselves, sorted by
+    repository-relative path, so the analysis pass fills in the same entries
+    the report renders, and sends nothing the plan did not count.
+    """
+
+    pending: tuple[dict[str, Any], ...]
+    kept: int
+
+    @property
+    def size_bytes(self) -> int:
+        """Source bytes the pending files send: exactly the bytes each hash covers."""
+        return sum(item["size_bytes"] for item in self.pending)
+
+    def summary(self, model: str) -> str:
+        """State what leaves the machine, in the one line the prompt, ``-y``, and ``--dry-run`` share."""
+        kept = (
+            "1 file with a current cached analysis keeps it; its source is not sent."
+            if self.kept == 1
+            else f"{self.kept} files with a current cached analysis keep it; their source is not sent."
+        )
+        return f"repo-map will send the full text of {_files(len(self.pending))} ({self.size_bytes / 1024:.1f} KiB) to OpenRouter ({model}), plus the repository's file and directory names and short notes on related files. {kept}"
+
+
+def plan_upload(
+    connection: sqlite3.Connection, structure: list[dict[str, Any]], model_name: str
+) -> UploadPlan:
+    """Split the eligible files into those to send and those whose analysis is reused.
+
+    A stored analysis is reusable only when the inputs that produced it still
+    hold: the source hash, the model, and the analysis contract revision. The
+    same unchanged file is therefore reanalyzed when the run selects another
+    model or the contract is bumped, and a row written before those columns
+    existed carries `NULL` for both and can never match. `model_name` is the
+    model this run analyzes with, and is required: defaulting it would compare
+    a row against a model the run never selected.
+
+    Eligibility is the scanner's shared source policy, not parser output, so
+    class-only modules and data or configuration files are candidates too.
+    Rows are looked up by relative key in ``connection``, which before consent
+    is the in-memory copy from `load_cache_snapshot()`.
+    """
+    analysis_inputs = (model_name, ANALYSIS_CONTRACT_VERSION)
+    cursor = connection.cursor()
+    pending: list[dict[str, Any]] = []
+    kept = 0
+    for item in structure:
+        if item["type"] != "file" or not item.get("source_eligible"):
+            continue
+        cursor.execute(
+            "SELECT hash, model, contract_version FROM cache WHERE path = ?",
+            (item["rel_path"],),
+        )
+        if cursor.fetchone() == (item.get("hash", ""), *analysis_inputs):
+            kept += 1
+        else:
+            pending.append(item)
+    pending.sort(key=lambda item: item["rel_path"])
+    return UploadPlan(pending=tuple(pending), kept=kept)
 
 
 class RepoMapApp:
@@ -49,97 +127,168 @@ class RepoMapApp:
         self.args: argparse.Namespace | None = None
         self.cache_conn: sqlite3.Connection | None = None
 
-    async def run(self) -> None:
-        """Execute the CLI flow."""
+    async def run(self) -> int:
+        """Execute the CLI flow and return the process exit status.
+
+        The repository is scanned before anything is sent, against an in-memory
+        copy of its cache, so the consent prompt states this run's numbers and
+        nothing reaches the target before the user agrees. The real cache opens
+        after consent, and the analysis pass sends exactly the files the prompt
+        counted. ``--dry-run`` lists those files and stops.
+        """
         setup_logging()
-        self.args = self._parse_args()
+        self.args = args = self._parse_args()
 
-        if not settings.has_api_key():
+        if not args.dry_run and not settings.has_api_key():
             logger.error("Error: OPENROUTER_API_KEY environment variable not set.")
-            sys.exit(1)
+            return 1
 
-        assert self.args is not None
         try:
-            update_api_semaphore_limit(self.args.concurrency)
+            update_api_semaphore_limit(args.concurrency)
         except ValueError as exc:
             logger.error("Invalid concurrency value: %s", exc)
-            sys.exit(1)
+            return 1
 
-        if not os.path.isdir(self.args.repository_path):
-            logger.error(
-                "Error: %s is not a valid directory", self.args.repository_path
-            )
-            sys.exit(1)
+        if not os.path.isdir(args.repository_path):
+            logger.error("Error: %s is not a valid directory", args.repository_path)
+            return 1
 
-        if not self.args.yes and not self._confirm_disclaimer():
-            logger.warning("Operation cancelled by the user.")
-            sys.exit(0)
-
+        model_name = args.model or settings.openrouter_model_name
         try:
-            self.cache_conn = load_cache(self.args.repository_path)
+            structure, plan = self._scan(model_name)
         except CacheError as exc:
             logger.error("%s", exc)
-            sys.exit(1)
+            return 1
+
+        if args.dry_run:
+            print(plan.summary(model_name))
+            for item in plan.pending:
+                print(f"{item['size_bytes']}\t{item['rel_path']}")
+            return 0
+
+        if plan.pending:
+            summary = plan.summary(model_name)
+            if args.yes:
+                logger.info("%s", summary)
+            elif not self._confirm_disclaimer(
+                DISCLOSURE_PROMPT.format(summary=summary)
+            ):
+                logger.warning("Operation cancelled by the user.")
+                return 0
 
         try:
-            await self._process_repository()
+            cache_conn = self.cache_conn = load_cache(args.repository_path)
+        except CacheError as exc:
+            logger.error("%s", exc)
+            return 1
+
+        try:
+            return await self._process_repository(structure, plan, model_name)
         finally:
-            if self.cache_conn:
-                self.cache_conn.close()
+            cache_conn.close()
 
-    async def _process_repository(self) -> None:
-        """Orchestrate scanning, LLM enhancement, and persistence."""
+    def _scan(self, model_name: str) -> tuple[list[dict[str, Any]], UploadPlan]:
+        """Scan the target and plan its upload against an in-memory copy of the cache.
+
+        Raises:
+            CacheError: The cache file exists but cannot be read.
+        """
         assert self.args is not None
-        assert self.cache_conn is not None
-        logger.info("Generating repository summary...")
-        summary = summarize_repo(self.args.repository_path, self.cache_conn)
+        # Under --dry-run, stdout is the listing alone.
+        if not self.args.dry_run:
+            logger.info("Generating repository summary...")
+        with closing(load_cache_snapshot(self.args.repository_path)) as snapshot:
+            structure = summarize_repo(self.args.repository_path, snapshot)
+            return structure, plan_upload(snapshot, structure, model_name)
 
+    async def _process_repository(
+        self, structure: list[dict[str, Any]], plan: UploadPlan, model_name: str
+    ) -> int:
+        """Analyze the planned files, then write the tree and the report.
+
+        Returns 0 only when every pending file was analyzed and the report was
+        written. A run-fatal OpenRouter error writes neither tree nor report;
+        the analyses that finished before it are already cached.
+        """
+        assert self.args is not None
         pre_enhanced_path = os.path.join(
             self.args.repository_path, ".repo_map_structure.json"
         )
-        save_json_map(summary, pre_enhanced_path)
+        save_json_map(structure, pre_enhanced_path)
 
         logger.info(
             "Enhancing repository summary with descriptions using OpenRouter LLM..."
         )
-        model_name = self.args.model or settings.openrouter_model_name
-        await self._enhance_summary_with_llm(summary, model_name)
-        self._prune_orphaned_cache_entries(summary)
+        try:
+            unanalyzed = await self._enhance_summary_with_llm(
+                structure, plan.pending, model_name
+            )
+        except FatalOpenRouterError as exc:
+            logger.error("Run stopped: %s", exc)
+            return 1
+        self._prune_orphaned_cache_entries(structure)
 
         logger.info("\nUpdated Repository Map:")
-        print_tree(summary)
+        print_tree(structure)
 
+        status = 0
         output_path = self._get_output_path()
-        save_markdown_map(summary, self.args.repository_path, output_path)
-        logger.info(
-            "Your repo-map has been saved to '%s'.", os.path.basename(output_path)
-        )
+        try:
+            save_markdown_map(structure, self.args.repository_path, output_path)
+        except OSError as exc:
+            logger.error(
+                "Cannot write the repository map to '%s': %s", output_path, exc
+            )
+            status = 1
+        else:
+            logger.info(
+                "Your repo-map has been saved to '%s'.", os.path.basename(output_path)
+            )
+
+        if unanalyzed:
+            logger.error(
+                "%s",
+                "1 file was not analyzed; rerun repo-map to retry it."
+                if unanalyzed == 1
+                else f"{unanalyzed} files were not analyzed; rerun repo-map to retry them.",
+            )
+            status = 1
+        return status
 
     async def _enhance_summary_with_llm(
-        self, structure: list[dict[str, Any]], model_name: str
-    ) -> None:
-        """Enhance file entries with LLM-produced metadata."""
-        files_to_process = self._get_files_to_process(structure, model_name)
+        self,
+        structure: list[dict[str, Any]],
+        pending: Sequence[dict[str, Any]],
+        model_name: str,
+    ) -> int:
+        """Analyze each pending file concurrently, caching each success as it lands.
 
-        tasks = [file for file in structure if file["path"] in files_to_process]
-
-        if not tasks:
+        Returns how many files were not analyzed. A failure in one file's
+        analysis stays with that file, whatever raised it, so its peers still
+        finish and cache. `FatalOpenRouterError` is the exception: every
+        remaining request would hit it too, so the first one cancels the
+        analyses still in flight and propagates, and the successes recorded
+        before it stay cached.
+        """
+        if not pending:
             logger.info("No new or modified files to enhance. All up to date.")
-            return
+            return 0
+
+        response_format = await resolve_response_format(model_name)
 
         async def enhance_file(
             file_data: dict[str, Any],
         ) -> tuple[dict[str, Any], AnalysisOutcome]:
-            """Analyze one file, keeping any failure scoped to that file.
-
-            An exception escaping here surfaces at ``await completed`` below and
-            abandons every task the loop has not yet processed, including
-            responses that already arrived and are waiting their turn.
-            """
+            """Analyze one file; only a run-fatal error escapes."""
             try:
                 outcome = await get_llm_descriptions(
-                    structure, file_data, model=model_name
+                    structure,
+                    file_data,
+                    model=model_name,
+                    response_format=response_format,
                 )
+            except FatalOpenRouterError:
+                raise
             except Exception:
                 logger.error(
                     "Unexpected error analyzing %s:", file_data["path"], exc_info=True
@@ -147,16 +296,37 @@ class RepoMapApp:
                 return file_data, AnalysisOutcome.FAILURE
             return file_data, outcome
 
-        pending = [asyncio.create_task(enhance_file(file)) for file in tasks]
+        in_flight = {asyncio.create_task(enhance_file(file)) for file in pending}
+        unanalyzed = 0
         with tqdm(total=len(pending), desc="Enhancing files", ncols=100) as progress:
-            for completed in asyncio.as_completed(pending):
-                file, outcome = await completed
-                if outcome is AnalysisOutcome.SUCCESS:
-                    tqdm.write(f"Processed: {file['name']}")
-                    self._update_cache_for_file(file)
-                else:
-                    tqdm.write(f"Not analyzed: {file['name']}")
-                progress.update()
+            try:
+                while in_flight:
+                    done, in_flight = await asyncio.wait(
+                        in_flight, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    fatal: FatalOpenRouterError | None = None
+                    for task in done:
+                        try:
+                            file, outcome = task.result()
+                        except FatalOpenRouterError as exc:
+                            fatal = fatal or exc
+                            continue
+                        if outcome is AnalysisOutcome.SUCCESS:
+                            tqdm.write(f"Processed: {file['name']}")
+                            self._update_cache_for_file(file)
+                        else:
+                            tqdm.write(f"Not analyzed: {file['name']}")
+                            unanalyzed += 1
+                        progress.update()
+                    if fatal is not None:
+                        raise fatal
+            finally:
+                # Tasks remain only when the pass is ending early; none may
+                # outlive it.
+                for task in in_flight:
+                    task.cancel()
+                await asyncio.gather(*in_flight, return_exceptions=True)
+        return unanalyzed
 
     def _prune_orphaned_cache_entries(self, structure: list[dict[str, Any]]) -> None:
         """Drop cache rows that no file in this scan claims.
@@ -172,40 +342,6 @@ class RepoMapApp:
         )
         if removed:
             logger.info("Removed %s cache entries with no matching file.", removed)
-
-    def _get_files_to_process(
-        self, structure: list[dict[str, Any]], model_name: str
-    ) -> set[str]:
-        """Determine which files need LLM enhancement based on cache state.
-
-        A stored analysis is reusable only when the inputs that produced it
-        still hold: the source hash, the model, and the analysis contract
-        revision. The same unchanged file is therefore reanalyzed when the run
-        selects another model or the contract is bumped, and a row written
-        before those columns existed carries `NULL` for both and can never
-        match. `model_name` is the model this run analyzes with, and is
-        required: defaulting it would compare a row against a model the run
-        never selected.
-
-        Eligibility is the scanner's shared source policy, not parser output, so
-        class-only modules and data or configuration files are candidates too.
-        The cache is consulted by relative key; the returned paths are absolute,
-        because that is what the analysis pass reads from disk.
-        """
-        assert self.cache_conn is not None
-        analysis_inputs = (model_name, ANALYSIS_CONTRACT_VERSION)
-        cursor = self.cache_conn.cursor()
-        files_to_process: set[str] = set()
-        for item in structure:
-            if item["type"] == "file" and item.get("source_eligible"):
-                cursor.execute(
-                    "SELECT hash, model, contract_version FROM cache WHERE path = ?",
-                    (item["rel_path"],),
-                )
-                cached = cursor.fetchone()
-                if cached != (item.get("hash", ""), *analysis_inputs):
-                    files_to_process.add(item["path"])
-        return files_to_process
 
     def _update_cache_for_file(self, file_data: dict[str, Any]) -> None:
         """Persist the latest LLM metadata for a file in the cache.
@@ -257,15 +393,15 @@ class RepoMapApp:
         )
         self.cache_conn.commit()
 
-    def _confirm_disclaimer(self) -> bool:
-        """Prompt the user to acknowledge the upload disclosure.
+    def _confirm_disclaimer(self, prompt: str) -> bool:
+        """Show the rendered upload disclosure and ask for consent.
 
         Consent must be explicit: an empty answer takes the `[y/N]` default and
         declines, so a stray newline on stdin cannot approve an upload.
         """
         while True:
             try:
-                user_input = input(DISCLOSURE_PROMPT).strip().lower()
+                user_input = input(prompt).strip().lower()
                 if user_input in ("y", "yes"):
                     return True
                 if user_input in ("", "n", "no"):
@@ -298,7 +434,12 @@ class RepoMapApp:
             "-y",
             "--yes",
             action="store_true",
-            help="Automatically accept the disclaimer without prompting.",
+            help="Send without asking for confirmation; the upload summary is still logged.",
+        )
+        parser.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="List the files a run would send, with their sizes in bytes, then exit\nwithout sending anything or writing to the repository. Needs no API key.",
         )
         parser.add_argument(
             "--model",

@@ -10,6 +10,7 @@ import repo_map.llm_service as llm_module
 from repo_map.config import ConfigurationError, Settings, load_settings
 
 OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODELS_ENDPOINT = "https://openrouter.ai/api/v1/models"
 BUILT_IN_REFERER = "https://github.com/cyanheads/repo-map"
 BUILT_IN_APP_NAME = "repo-map"
 
@@ -18,6 +19,7 @@ REPO_MAP_ENV_VARS = (
     "OPENROUTER_MODEL_NAME",
     "API_SEMAPHORE_LIMIT",
     "OPENROUTER_API_URL",
+    "OPENROUTER_MODELS_URL",
     "HTTP_REFERER",
     "APP_NAME",
 )
@@ -48,7 +50,13 @@ def _capturing_session() -> tuple[type, dict[str, Any]]:
         async def json(self) -> dict[str, Any]:
             return {"choices": []}
 
+        async def read(self) -> bytes:
+            return b'{"data": {"endpoints": []}}'
+
     class Session:
+        def __init__(self, **kwargs) -> None:
+            captured["session"] = kwargs
+
         async def __aenter__(self) -> "Session":
             return self
 
@@ -60,6 +68,11 @@ def _capturing_session() -> tuple[type, dict[str, Any]]:
             captured["headers"] = headers
             return Response()
 
+        def get(self, url: str, **kwargs) -> Response:
+            captured["url"] = url
+            captured["headers"] = kwargs.get("headers")
+            return Response()
+
     return Session, captured
 
 
@@ -69,7 +82,11 @@ def _capture_request(monkeypatch, settings: Settings) -> dict[str, Any]:
     monkeypatch.setattr(llm_module.aiohttp, "ClientSession", session_cls)
     monkeypatch.setattr(llm_module, "settings", settings)
 
-    asyncio.run(llm_module.rate_limited_api_call([], "test-model", "test-session"))
+    asyncio.run(
+        llm_module.rate_limited_api_call(
+            [], "test-model", "test-session", {"type": "json_object"}
+        )
+    )
 
     return captured
 
@@ -205,3 +222,23 @@ def test_planted_env_cannot_redirect_requests_or_rewrite_headers(
     assert captured["headers"]["HTTP-Referer"] == BUILT_IN_REFERER
     assert captured["headers"]["X-Title"] == BUILT_IN_APP_NAME
     assert captured["headers"]["Authorization"] == "Bearer sk-real-key"
+
+
+def test_planted_env_cannot_redirect_the_model_endpoint_lookup(
+    scratch_cwd, monkeypatch
+) -> None:
+    """The capability lookup's base is a constant too, and it carries no credential."""
+    (scratch_cwd / ".env").write_text(
+        "OPENROUTER_MODELS_URL=https://evil.example/models\n"
+        "OPENROUTER_API_KEY=sk-attacker-placeholder\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-real-key")
+    session_cls, captured = _capturing_session()
+    monkeypatch.setattr(llm_module.aiohttp, "ClientSession", session_cls)
+    monkeypatch.setattr(llm_module, "settings", Settings())
+
+    asyncio.run(llm_module.resolve_response_format("vendor/model-a"))
+
+    assert captured["url"] == f"{OPENROUTER_MODELS_ENDPOINT}/vendor/model-a/endpoints"
+    assert "sk-real-key" not in repr(captured)

@@ -112,19 +112,21 @@ def print_tree(structure: list[dict[str, Any]]) -> None:
 def save_markdown_map(
     structure: list[dict[str, Any]], repo_root: str, output_path: str
 ) -> None:
-    """Persist the repository map to a Markdown file."""
+    """Persist the repository map to a Markdown file.
+
+    Raises:
+        OSError: The report could not be written. It is left to the caller,
+            which decides what a missing report means for the run.
+    """
     repo_name = os.path.basename(os.path.abspath(repo_root))
-    try:
-        with open(output_path, "w", encoding="utf-8") as handle:
-            handle.write("# Repository Map\n\n")
-            handle.write("```markdown\n")
-            handle.write(f"/ ({repo_name})\n")
-            for line in format_tree_lines(structure):
-                handle.write(f"{line}\n")
-            handle.write("└────────────── \n")
-            handle.write("```\n")
-    except OSError as exc:
-        logger.error("Error saving repository map: %s", exc)
+    with open(output_path, "w", encoding="utf-8") as handle:
+        handle.write("# Repository Map\n\n")
+        handle.write("```markdown\n")
+        handle.write(f"/ ({repo_name})\n")
+        for line in format_tree_lines(structure):
+            handle.write(f"{line}\n")
+        handle.write("└────────────── \n")
+        handle.write("```\n")
 
 
 def save_json_map(structure: list[dict[str, Any]], output_path: str) -> None:

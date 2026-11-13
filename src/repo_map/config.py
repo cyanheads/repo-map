@@ -10,6 +10,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # headers off `Settings` leaves nothing there for such a file to reach, while
 # the credential and tuning fields below still load as documented.
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+# Base of the keyless per-model lookup `{base}/{model}/endpoints`, which reports
+# the parameters each provider endpoint for that model supports.
+OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 HTTP_REFERER = "https://github.com/cyanheads/repo-map"
 APP_NAME = "repo-map"
 

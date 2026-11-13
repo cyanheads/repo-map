@@ -14,8 +14,13 @@ from repo_map.logging_utils import setup_logging
 logger = logging.getLogger(__name__)
 
 
-def run_main() -> None:
-    """Run the application and capture top-level exceptions."""
+def run_main() -> int:
+    """Run the application and return the process exit status.
+
+    The status is the one `RepoMapApp.run()` reports, 1 for a configuration
+    error or an unexpected exception, or 130 for Ctrl-C. The console script
+    exits with it.
+    """
     setup_logging()
 
     # Deferred deliberately: importing the application constructs the settings
@@ -27,17 +32,17 @@ def run_main() -> None:
         from repo_map.cli_handler import RepoMapApp
     except ValueError as exc:
         logger.error("%s", exc)
-        sys.exit(1)
+        return 1
 
     try:
-        asyncio.run(RepoMapApp().run())
+        return asyncio.run(RepoMapApp().run())
     except KeyboardInterrupt:
         logger.warning("\nProcess interrupted by user. Exiting.")
-        sys.exit(130)
+        return 130
     except Exception:
         logger.error("An unexpected error occurred:", exc_info=True)
-        sys.exit(1)
+        return 1
 
 
 if __name__ == "__main__":
-    run_main()
+    sys.exit(run_main())

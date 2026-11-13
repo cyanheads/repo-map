@@ -5,7 +5,7 @@ import asyncio
 import repo_map.cli_handler as cli_module
 import repo_map.llm_service as llm_module
 from repo_map.cache_manager import load_cache
-from repo_map.cli_handler import RepoMapApp
+from repo_map.cli_handler import RepoMapApp, plan_upload
 from repo_map.code_parser import get_structure
 from repo_map.file_scanner import load_source_snapshot, summarize_repo
 from repo_map.llm_service import AnalysisOutcome
@@ -41,35 +41,38 @@ def test_unsuccessful_analysis_remains_pending(tmp_path, monkeypatch) -> None:
     app = RepoMapApp()
     app.cache_conn = connection
 
-    async def failed_analysis(structure, file_data, model):
+    async def failed_analysis(structure, file_data, model, response_format):
         return AnalysisOutcome.FAILURE
 
-    monkeypatch.setattr(cli_module, "get_llm_descriptions", failed_analysis)
-    asyncio.run(app._enhance_summary_with_llm(structure, "test-model"))
+    async def response_format(model):
+        return {"type": "json_object"}
 
-    pending = app._get_files_to_process(
-        summarize_repo(str(tmp_path), connection), "test-model"
+    monkeypatch.setattr(cli_module, "get_llm_descriptions", failed_analysis)
+    monkeypatch.setattr(cli_module, "resolve_response_format", response_format)
+    pending = plan_upload(connection, structure, "test-model").pending
+    asyncio.run(app._enhance_summary_with_llm(structure, pending, "test-model"))
+
+    replanned = plan_upload(
+        connection, summarize_repo(str(tmp_path), connection), "test-model"
     )
     connection.close()
 
-    assert str(source) in pending
+    assert [item["path"] for item in replanned.pending] == [str(source)]
 
 
 def test_class_only_and_data_files_are_eligible_for_enrichment(tmp_path) -> None:
     (tmp_path / "class_only.py").write_text("class Only:\n    pass\n", encoding="utf-8")
     (tmp_path / "config.json").write_text('{"enabled": true}\n', encoding="utf-8")
     connection = load_cache(str(tmp_path))
-    app = RepoMapApp()
-    app.cache_conn = connection
     structure = summarize_repo(str(tmp_path), connection)
 
-    pending = app._get_files_to_process(structure, "test-model")
+    plan = plan_upload(connection, structure, "test-model")
     connection.close()
 
-    assert pending == {
+    assert [item["path"] for item in plan.pending] == [
         str(tmp_path / "class_only.py"),
         str(tmp_path / "config.json"),
-    }
+    ]
 
 
 def test_parser_preserves_async_and_javascript_scope(tmp_path) -> None:

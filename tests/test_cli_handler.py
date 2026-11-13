@@ -5,20 +5,27 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 
+import aiohttp
 import pytest
 
 import repo_map.cli_handler as cli_module
 import repo_map.llm_service as llm_module
+import repo_map.main as main_module
 from repo_map.cache_manager import CACHE_FILE_NAME, CacheError, load_cache
 from repo_map.cli_handler import RepoMapApp
 from repo_map.file_scanner import load_source_snapshot
-from repo_map.llm_service import ANALYSIS_CONTRACT_VERSION, AnalysisOutcome
+from repo_map.llm_service import (
+    ANALYSIS_CONTRACT_VERSION,
+    AnalysisOutcome,
+    FatalOpenRouterError,
+)
 
 #: Variables that must not leak from the developer's shell into a CLI subprocess.
 INHERITED_SETTINGS_VARS = (
@@ -57,11 +64,14 @@ WELL_FORMED_ANALYSIS = {
     "description": "A module.",
     "developer_consideration": None,
     "maintenance_flag": "Stable",
-    "critical_dependencies": {},
+    "critical_dependencies": [],
     "architectural_role": "Utility",
     "refactoring_suggestions": None,
     "security_assessment": None,
 }
+
+#: The analysis request's line naming its target, by repository-relative path.
+TARGET_FILE = re.compile(r"Target file: `([^`]+)`")
 
 
 def _console_script() -> list[str]:
@@ -77,13 +87,18 @@ def _console_script() -> list[str]:
 
 
 def _run_cli(
-    arguments: list[str], *, cwd: Path, env: dict[str, str] | None = None
+    arguments: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None = None,
+    stdin: str = "",
 ) -> subprocess.CompletedProcess[str]:
     """Run the console script the way a user does, in an isolated environment.
 
     ``cwd`` is a scratch directory so the project's own ``.env`` cannot supply
     settings, and ``PYTHONOPTIMIZE`` is cleared for the same reason the
-    ``Makefile`` clears it.
+    ``Makefile`` clears it. ``stdin`` is everything the process can read, then
+    end of file, so a prompt never waits on the terminal running the tests.
     """
     child_env = {
         name: value
@@ -95,6 +110,7 @@ def _run_cli(
         [*_console_script(), *arguments],
         capture_output=True,
         text=True,
+        input=stdin,
         cwd=str(cwd),
         env=child_env,
     )
@@ -133,7 +149,8 @@ def _pending_names(
     """Basenames of the files a fresh scan of ``repository`` would send to the LLM."""
     assert app.cache_conn is not None
     structure = cli_module.summarize_repo(str(repository), app.cache_conn)
-    return {Path(path).name for path in app._get_files_to_process(structure, model)}
+    plan = cli_module.plan_upload(app.cache_conn, structure, model)
+    return {item["name"] for item in plan.pending}
 
 
 def _cache_keys(connection) -> set[str]:
@@ -162,20 +179,24 @@ def _seed_pre_identity_cache(repository: Path, key: str, file_hash: str) -> None
     connection.close()
 
 
-def _stub_successful_analysis(monkeypatch) -> None:
-    """Answer every OpenRouter request with a contract-complete analysis."""
+def _stub_response_format(monkeypatch) -> None:
+    """Answer the per-run response-format choice locally, never over the network."""
 
-    async def analysis(messages, model, session_id):
-        return {"choices": [{"message": {"content": json.dumps(WELL_FORMED_ANALYSIS)}}]}
+    async def response_format(model):
+        return {"type": "json_object"}
 
-    monkeypatch.setattr(llm_module, "rate_limited_api_call", analysis)
+    monkeypatch.setattr(cli_module, "resolve_response_format", response_format)
 
 
-def _recording_successful_analysis(monkeypatch) -> list[str]:
-    """Stub a successful analysis, returning the list of models actually requested."""
+def _stub_successful_analysis(monkeypatch) -> list[str]:
+    """Answer every OpenRouter request with a contract-complete analysis.
+
+    Returns the list of models actually requested.
+    """
+    _stub_response_format(monkeypatch)
     requested: list[str] = []
 
-    async def analysis(messages, model, session_id):
+    async def analysis(messages, model, session_id, response_format):
         requested.append(model)
         return {"choices": [{"message": {"content": json.dumps(WELL_FORMED_ANALYSIS)}}]}
 
@@ -183,17 +204,149 @@ def _recording_successful_analysis(monkeypatch) -> list[str]:
     return requested
 
 
-def _run_against(repository: Path, model: str) -> None:
-    """Run one full pass over ``repository`` with ``model``, as the CLI would."""
+def _run_against(monkeypatch, repository: Path, model: str) -> int:
+    """Run one unattended pass over ``repository`` with ``model``, as the CLI would."""
+    return _run_app(monkeypatch, repository, "-y", "--model", model)
+
+
+def _run_app(
+    monkeypatch,
+    repository: Path,
+    *arguments: str,
+    api_key: str | None = PLACEHOLDER_API_KEY,
+):
+    """Run the CLI flow in-process as ``repo-map <repository> <arguments>``.
+
+    Goes through the real argument parser and ``RepoMapApp.run()``, so the
+    order of the key check, scan, consent, and cache opening is the shipped
+    one. Logging is reconfigured by ``run()`` onto stdout; read it with
+    ``capsys``.
+    """
+    monkeypatch.setattr(sys, "argv", ["repo-map", str(repository), *arguments])
+    monkeypatch.setattr(cli_module.settings, "openrouter_api_key", api_key)
+    return asyncio.run(RepoMapApp().run())
+
+
+def _record_requests(monkeypatch) -> list[str]:
+    """Record every OpenRouter contact a run makes, answering analyses with success.
+
+    Each entry is ``"response_format"`` for the per-run setup call or the
+    target's repository-relative path for an analysis request. Anything that
+    still reaches aiohttp is recorded as ``"http"`` and refused, so no test
+    run touches the network whatever the client grows.
+    """
+    requests: list[str] = []
+
+    async def response_format(model):
+        requests.append("response_format")
+        return {"type": "json_object"}
+
+    async def analysis(messages, model, session_id, response_format):
+        target = TARGET_FILE.search(messages[1]["content"])
+        assert target is not None
+        requests.append(target.group(1))
+        return {"choices": [{"message": {"content": json.dumps(WELL_FORMED_ANALYSIS)}}]}
+
+    async def refuse(self, *args, **kwargs):
+        requests.append("http")
+        raise AssertionError("a test run reached the network")
+
+    monkeypatch.setattr(cli_module, "resolve_response_format", response_format)
+    monkeypatch.setattr(llm_module, "rate_limited_api_call", analysis)
+    monkeypatch.setattr(aiohttp.ClientSession, "_request", refuse)
+    return requests
+
+
+def _stub_analysis_except(
+    monkeypatch, failures: dict[str, Exception | AnalysisOutcome]
+) -> None:
+    """Analyze every file for real against a stubbed success, except the named ones.
+
+    A file whose name is in ``failures`` raises that exception, or returns that
+    outcome, in place of its analysis.
+    """
+    _record_requests(monkeypatch)
+
+    async def analysis(structure, file_data, model, response_format):
+        failure = failures.get(file_data["name"])
+        if isinstance(failure, Exception):
+            raise failure
+        if failure is not None:
+            return failure
+        return await llm_module.get_llm_descriptions(
+            structure, file_data, model=model, response_format=response_format
+        )
+
+    monkeypatch.setattr(cli_module, "get_llm_descriptions", analysis)
+
+
+class _Progress:
+    """Stands in for ``tqdm``: counts progress updates and swallows writes."""
+
+    def __init__(self) -> None:
+        self.steps = 0
+
+    def __call__(self, **kwargs) -> "_Progress":
+        return self
+
+    def __enter__(self) -> "_Progress":
+        return self
+
+    def __exit__(self, *args) -> None:
+        return None
+
+    def update(self) -> None:
+        self.steps += 1
+
+    @staticmethod
+    def write(message: str) -> None:
+        return None
+
+
+def _refuse_input(monkeypatch) -> None:
+    """Fail the test if the run asks the user anything."""
+
+    def refuse(prompt: str) -> str:
+        raise AssertionError(f"unexpected prompt: {prompt}")
+
+    monkeypatch.setattr("builtins.input", refuse)
+
+
+def _write(path: Path, size: int) -> None:
+    """Write a valid Python source file of exactly ``size`` bytes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"#" * (size - 1) + b"\n")
+
+
+def _tree(root: Path) -> dict[str, bytes | None]:
+    """Every path under ``root`` with its bytes, or None for a directory."""
+    return {
+        path.relative_to(root).as_posix(): None if path.is_dir() else path.read_bytes()
+        for path in sorted(root.rglob("*"))
+    }
+
+
+def _report(repository: Path) -> Path:
+    return repository / f"{repository.name}_repo_map.md"
+
+
+def _cache_all(repository: Path, model: str = ANALYZING_MODEL) -> None:
+    """Give every file now in ``repository`` a current cached analysis under ``model``."""
     app = RepoMapApp()
-    app.args = argparse.Namespace(
-        repository_path=str(repository), yes=True, model=model, concurrency=3
-    )
     app.cache_conn = load_cache(str(repository))
     try:
-        asyncio.run(app._process_repository())
+        _cache_every_scanned_file(app, repository, model)
     finally:
         app.cache_conn.close()
+
+
+def _console_exit_status() -> int:
+    """The status the console script's ``sys.exit(run_main())`` ends the process with."""
+    with pytest.raises(SystemExit) as exit_info:
+        sys.exit(main_module.run_main())
+    code = exit_info.value.code
+    assert code is None or isinstance(code, int)
+    return code or 0
 
 
 def _answers(monkeypatch, *responses: str) -> list[str]:
@@ -230,8 +383,8 @@ def test_get_output_path_names_a_relative_path_after_its_directory(
     assert os.path.basename(app._get_output_path()) == "sample-repo_repo_map.md"
 
 
-def test_get_files_to_process_uses_hash_cache(tmp_path) -> None:
-    """Cache lookups key on the relative path; the pending set names files to read."""
+def test_plan_upload_uses_hash_cache(tmp_path) -> None:
+    """Cache lookups key on the relative path; a current row keeps its file."""
     source = tmp_path / "module.py"
     connection = load_cache(str(tmp_path))
     connection.execute(
@@ -239,8 +392,6 @@ def test_get_files_to_process_uses_hash_cache(tmp_path) -> None:
         ("module.py", "current", ANALYZING_MODEL, ANALYSIS_CONTRACT_VERSION),
     )
     connection.commit()
-    app = RepoMapApp()
-    app.cache_conn = connection
     structure = [
         {
             "path": str(source),
@@ -268,13 +419,14 @@ def test_get_files_to_process_uses_hash_cache(tmp_path) -> None:
         },
     ]
 
-    pending = app._get_files_to_process(structure, ANALYZING_MODEL)
+    plan = cli_module.plan_upload(connection, structure, ANALYZING_MODEL)
     connection.close()
 
-    assert pending == {str(tmp_path / "changed.py")}
+    assert [item["path"] for item in plan.pending] == [str(tmp_path / "changed.py")]
+    assert plan.kept == 1
 
 
-def test_get_files_to_process_ignores_a_legacy_absolute_path_row(tmp_path) -> None:
+def test_plan_upload_ignores_a_legacy_absolute_path_row(tmp_path) -> None:
     """A pre-upgrade row never matches a relative key, so its file is pending."""
     source = tmp_path / "module.py"
     connection = load_cache(str(tmp_path))
@@ -283,10 +435,9 @@ def test_get_files_to_process_ignores_a_legacy_absolute_path_row(tmp_path) -> No
         (str(source), "current"),
     )
     connection.commit()
-    app = RepoMapApp()
-    app.cache_conn = connection
 
-    pending = app._get_files_to_process(
+    plan = cli_module.plan_upload(
+        connection,
         [
             {
                 "path": str(source),
@@ -300,57 +451,48 @@ def test_get_files_to_process_ignores_a_legacy_absolute_path_row(tmp_path) -> No
     )
     connection.close()
 
-    assert pending == {str(source)}
+    assert [item["path"] for item in plan.pending] == [str(source)]
+    assert plan.kept == 0
 
 
-def test_disclosure_states_full_source_upload_and_root_gitignore_scope(
-    monkeypatch,
-) -> None:
-    """The prompt names what leaves the machine and how narrow the ignore rules are."""
-    shown = _answers(monkeypatch, "n")
-
-    RepoMapApp()._confirm_disclaimer()
-
-    prompt = shown[0]
-    assert "full text of each eligible file" in prompt
-    assert "OpenRouter" in prompt
-    assert "root .gitignore" in prompt
-    assert "subdirectories are not applied" in prompt
+#: A disclosure as `run()` renders it, for the consent-grammar cases.
+RENDERED_PROMPT = cli_module.DISCLOSURE_PROMPT.format(summary="Summary of this run.")
 
 
 def test_confirm_disclaimer_declines_bare_enter(monkeypatch) -> None:
     """A stray newline is not consent; the advertised default declines."""
     shown = _answers(monkeypatch, "")
 
-    assert RepoMapApp()._confirm_disclaimer() is False
-    assert "[y/N]" in shown[0]
+    assert RepoMapApp()._confirm_disclaimer(RENDERED_PROMPT) is False
+    assert shown == [RENDERED_PROMPT]
+    assert shown[0].endswith("Proceed? [y/N]: ")
 
 
 def test_confirm_disclaimer_declines_whitespace_only_input(monkeypatch) -> None:
     _answers(monkeypatch, "   \t ")
 
-    assert RepoMapApp()._confirm_disclaimer() is False
+    assert RepoMapApp()._confirm_disclaimer(RENDERED_PROMPT) is False
 
 
 @pytest.mark.parametrize("response", ["y", "yes", "Y", "YES", " yes "])
 def test_confirm_disclaimer_accepts_explicit_yes(monkeypatch, response: str) -> None:
     _answers(monkeypatch, response)
 
-    assert RepoMapApp()._confirm_disclaimer() is True
+    assert RepoMapApp()._confirm_disclaimer(RENDERED_PROMPT) is True
 
 
 @pytest.mark.parametrize("response", ["n", "no", "N", "NO"])
 def test_confirm_disclaimer_declines_explicit_no(monkeypatch, response: str) -> None:
     _answers(monkeypatch, response)
 
-    assert RepoMapApp()._confirm_disclaimer() is False
+    assert RepoMapApp()._confirm_disclaimer(RENDERED_PROMPT) is False
 
 
 def test_confirm_disclaimer_reprompts_unrecognized_input(monkeypatch, capsys) -> None:
     shown = _answers(monkeypatch, "maybe", "y")
 
-    assert RepoMapApp()._confirm_disclaimer() is True
-    assert len(shown) == 2
+    assert RepoMapApp()._confirm_disclaimer(RENDERED_PROMPT) is True
+    assert shown == [RENDERED_PROMPT, RENDERED_PROMPT]
     assert "Invalid input" in capsys.readouterr().out
 
 
@@ -362,7 +504,7 @@ def test_confirm_disclaimer_cancels_on_closed_stdin(monkeypatch, capsys) -> None
 
     monkeypatch.setattr("builtins.input", raise_eof)
 
-    assert RepoMapApp()._confirm_disclaimer() is False
+    assert RepoMapApp()._confirm_disclaimer(RENDERED_PROMPT) is False
     assert "Operation cancelled." in capsys.readouterr().out
 
 
@@ -372,34 +514,23 @@ def test_confirm_disclaimer_cancels_on_keyboard_interrupt(monkeypatch, capsys) -
 
     monkeypatch.setattr("builtins.input", raise_interrupt)
 
-    assert RepoMapApp()._confirm_disclaimer() is False
+    assert RepoMapApp()._confirm_disclaimer(RENDERED_PROMPT) is False
     assert "Operation cancelled." in capsys.readouterr().out
 
 
 def test_yes_flag_bypasses_disclosure_prompt(monkeypatch, tmp_path, capsys) -> None:
     """``-y`` never prompts, and a cache failure still exits 1 with one line."""
-    prompted: list[str] = []
-    app = RepoMapApp()
-    monkeypatch.setattr(
-        app,
-        "_parse_args",
-        lambda: argparse.Namespace(
-            repository_path=str(tmp_path), yes=True, model=None, concurrency=3
-        ),
-    )
-    monkeypatch.setattr(app, "_confirm_disclaimer", lambda: prompted.append("asked"))
-    monkeypatch.setattr(cli_module.settings, "openrouter_api_key", PLACEHOLDER_API_KEY)
+    _write(tmp_path / "mod.py", 10)
+    _refuse_input(monkeypatch)
 
     def explode(_repository_path: str):
         raise CacheError(f"cache is unusable at {tmp_path / CACHE_FILE_NAME}")
 
     monkeypatch.setattr(cli_module, "load_cache", explode)
 
-    with pytest.raises(SystemExit) as failure:
-        asyncio.run(app.run())
+    status = _run_app(monkeypatch, tmp_path, "-y")
 
-    assert failure.value.code == 1
-    assert prompted == []
+    assert status == 1
     assert CACHE_FILE_NAME in capsys.readouterr().out
 
 
@@ -458,7 +589,16 @@ def test_unwritable_cache_directory_exits_without_traceback(tmp_path) -> None:
     assert "clean rebuild" in result.stdout + result.stderr
 
 
-def test_corrupt_cache_file_exits_without_traceback(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("arguments", "env"),
+    [
+        pytest.param(["-y"], {"OPENROUTER_API_KEY": PLACEHOLDER_API_KEY}, id="run"),
+        pytest.param(["--dry-run"], {}, id="dry-run"),
+    ],
+)
+def test_corrupt_cache_file_exits_without_traceback(
+    tmp_path, arguments: list[str], env: dict[str, str]
+) -> None:
     """A corrupt `.repo-map-cache.db` reports the cache path and the remedy."""
     repository = tmp_path / "repo"
     repository.mkdir()
@@ -466,11 +606,7 @@ def test_corrupt_cache_file_exits_without_traceback(tmp_path) -> None:
     scratch = tmp_path / "scratch"
     scratch.mkdir()
 
-    result = _run_cli(
-        [str(repository), "-y"],
-        cwd=scratch,
-        env={"OPENROUTER_API_KEY": PLACEHOLDER_API_KEY},
-    )
+    result = _run_cli([str(repository), *arguments], cwd=scratch, env=env)
 
     _assert_single_line_failure(result, expected=str(repository / CACHE_FILE_NAME))
     assert "clean rebuild" in result.stdout + result.stderr
@@ -510,7 +646,6 @@ def test_enhancement_runs_concurrently_and_caches_completed_file(monkeypatch) ->
     active = 0
     peak = 0
     cache_updates = []
-    progress_steps = 0
     delays = [0.04, 0.01, 0.03, 0.02]
     structure = [
         {
@@ -523,7 +658,7 @@ def test_enhancement_runs_concurrently_and_caches_completed_file(monkeypatch) ->
         for index in range(4)
     ]
 
-    async def fake_description(received_structure, file_data, model):
+    async def fake_description(received_structure, file_data, model, response_format):
         nonlocal active, peak
         assert received_structure is structure
         active += 1
@@ -534,38 +669,20 @@ def test_enhancement_runs_concurrently_and_caches_completed_file(monkeypatch) ->
         active -= 1
         return AnalysisOutcome.SUCCESS
 
-    class Progress:
-        def __call__(self, **kwargs):
-            return self
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args) -> None:
-            return None
-
-        def update(self) -> None:
-            nonlocal progress_steps
-            progress_steps += 1
-
-        @staticmethod
-        def write(message: str) -> None:
-            return None
-
     app = RepoMapApp()
-    monkeypatch.setattr(
-        app,
-        "_get_files_to_process",
-        lambda received, model: {item["path"] for item in received},
-    )
+    progress = _Progress()
     monkeypatch.setattr(app, "_update_cache_for_file", cache_updates.append)
     monkeypatch.setattr(cli_module, "get_llm_descriptions", fake_description)
-    monkeypatch.setattr(cli_module, "tqdm", Progress())
+    monkeypatch.setattr(cli_module, "tqdm", progress)
+    _stub_response_format(monkeypatch)
 
-    asyncio.run(app._enhance_summary_with_llm(structure, "test-model"))
+    unanalyzed = asyncio.run(
+        app._enhance_summary_with_llm(structure, structure, "test-model")
+    )
 
+    assert unanalyzed == 0
     assert peak == len(structure)
-    assert progress_steps == len(structure)
+    assert progress.steps == len(structure)
     assert [file_data["path"] for file_data in cache_updates] == [
         "/tmp/1.py",
         "/tmp/3.py",
@@ -585,7 +702,6 @@ def test_enhancement_isolates_failures_and_caches_each_success_once(
     monkeypatch,
 ) -> None:
     cache_updates = []
-    progress_steps = 0
     structure = [
         {
             "path": f"/tmp/{name}.py",
@@ -596,7 +712,7 @@ def test_enhancement_isolates_failures_and_caches_each_success_once(
         for name in ("slow-success", "failure", "fast-success")
     ]
 
-    async def fake_description(received_structure, file_data, model):
+    async def fake_description(received_structure, file_data, model, response_format):
         assert received_structure is structure
         if file_data["name"] == "slow-success.py":
             await asyncio.sleep(0.02)
@@ -607,37 +723,19 @@ def test_enhancement_isolates_failures_and_caches_each_success_once(
         await asyncio.sleep(0.01)
         return AnalysisOutcome.FAILURE
 
-    class Progress:
-        def __call__(self, **kwargs):
-            return self
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args) -> None:
-            return None
-
-        def update(self) -> None:
-            nonlocal progress_steps
-            progress_steps += 1
-
-        @staticmethod
-        def write(message: str) -> None:
-            return None
-
     app = RepoMapApp()
-    monkeypatch.setattr(
-        app,
-        "_get_files_to_process",
-        lambda received, model: {item["path"] for item in received},
-    )
+    progress = _Progress()
     monkeypatch.setattr(app, "_update_cache_for_file", cache_updates.append)
     monkeypatch.setattr(cli_module, "get_llm_descriptions", fake_description)
-    monkeypatch.setattr(cli_module, "tqdm", Progress())
+    monkeypatch.setattr(cli_module, "tqdm", progress)
+    _stub_response_format(monkeypatch)
 
-    asyncio.run(app._enhance_summary_with_llm(structure, "test-model"))
+    unanalyzed = asyncio.run(
+        app._enhance_summary_with_llm(structure, structure, "test-model")
+    )
 
-    assert progress_steps == len(structure)
+    assert unanalyzed == 1
+    assert progress.steps == len(structure)
     assert [item["name"] for item in cache_updates] == [
         "fast-success.py",
         "slow-success.py",
@@ -650,7 +748,6 @@ def test_enhancement_isolates_a_raising_task_from_its_peers(
 ) -> None:
     """An exception the retry loop does not guard fails one file, not the pass."""
     cache_updates = []
-    progress_steps = 0
     structure = [
         {
             "path": f"/tmp/{name}.py",
@@ -661,7 +758,7 @@ def test_enhancement_isolates_a_raising_task_from_its_peers(
         for name in ("fast-success", "raiser", "slow-success")
     ]
 
-    async def fake_description(received_structure, file_data, model):
+    async def fake_description(received_structure, file_data, model, response_format):
         assert received_structure is structure
         if file_data["name"] == "fast-success.py":
             await asyncio.sleep(0.005)
@@ -673,38 +770,20 @@ def test_enhancement_isolates_a_raising_task_from_its_peers(
         await asyncio.sleep(0.03)
         return AnalysisOutcome.SUCCESS
 
-    class Progress:
-        def __call__(self, **kwargs):
-            return self
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args) -> None:
-            return None
-
-        def update(self) -> None:
-            nonlocal progress_steps
-            progress_steps += 1
-
-        @staticmethod
-        def write(message: str) -> None:
-            return None
-
     app = RepoMapApp()
-    monkeypatch.setattr(
-        app,
-        "_get_files_to_process",
-        lambda received, model: {item["path"] for item in received},
-    )
+    progress = _Progress()
     monkeypatch.setattr(app, "_update_cache_for_file", cache_updates.append)
     monkeypatch.setattr(cli_module, "get_llm_descriptions", fake_description)
-    monkeypatch.setattr(cli_module, "tqdm", Progress())
+    monkeypatch.setattr(cli_module, "tqdm", progress)
+    _stub_response_format(monkeypatch)
 
     with caplog.at_level(logging.ERROR, logger=cli_module.__name__):
-        asyncio.run(app._enhance_summary_with_llm(structure, "test-model"))
+        unanalyzed = asyncio.run(
+            app._enhance_summary_with_llm(structure, structure, "test-model")
+        )
 
-    assert progress_steps == len(structure)
+    assert unanalyzed == 1
+    assert progress.steps == len(structure)
     assert [item["name"] for item in cache_updates] == [
         "fast-success.py",
         "slow-success.py",
@@ -720,7 +799,7 @@ def test_malformed_response_shapes_leave_the_rest_of_the_pass_intact(
     for index, name in enumerate(names):
         (tmp_path / f"{name}.py").write_text(f"VALUE = {index}\n", encoding="utf-8")
 
-    async def shaped_response(messages, model, session_id):
+    async def shaped_response(messages, model, session_id, response_format):
         prompt = messages[1]["content"]
         if "Target file: `no-content.py`" in prompt:
             return {"choices": [{"message": {"role": "assistant"}}]}
@@ -732,29 +811,18 @@ def test_malformed_response_shapes_leave_the_rest_of_the_pass_intact(
         return {"choices": [{"message": {"content": json.dumps(WELL_FORMED_ANALYSIS)}}]}
 
     monkeypatch.setattr(llm_module, "rate_limited_api_call", shaped_response)
+    _stub_response_format(monkeypatch)
+
+    status = _run_against(monkeypatch, tmp_path, ANALYZING_MODEL)
 
     app = RepoMapApp()
-    app.args = argparse.Namespace(
-        repository_path=str(tmp_path), yes=True, model="test-model", concurrency=3
-    )
     app.cache_conn = load_cache(str(tmp_path))
-
-    asyncio.run(app._process_repository())
-
-    cached = {
-        Path(row[0]).name
-        for row in app.cache_conn.execute("SELECT path FROM cache").fetchall()
-    }
-    pending = {
-        Path(path).name
-        for path in app._get_files_to_process(
-            cli_module.summarize_repo(str(tmp_path), app.cache_conn), "test-model"
-        )
-    }
+    pending = _pending_names(app, tmp_path)
     app.cache_conn.close()
 
-    assert (tmp_path / f"{tmp_path.name}_repo_map.md").is_file()
-    assert cached == {"early.py", "late.py"}
+    assert status == 1
+    assert _report(tmp_path).is_file()
+    assert {row[0] for row in _cache_rows(tmp_path)} == {"early.py", "late.py"}
     assert pending == {"no-content.py", "no-message.py"}
 
 
@@ -799,14 +867,13 @@ def test_cache_copied_into_a_fresh_checkout_is_reused(tmp_path) -> None:
     checkout = tmp_path / "ci" / "workspace" / "checkout"
     shutil.copytree(origin, checkout)
     connection = load_cache(str(checkout))
-    app = RepoMapApp()
-    app.cache_conn = connection
     structure = cli_module.summarize_repo(str(checkout), connection)
-    pending = app._get_files_to_process(structure, ANALYZING_MODEL)
+    plan = cli_module.plan_upload(connection, structure, ANALYZING_MODEL)
     connection.close()
 
     cached_file = next(item for item in structure if item["name"] == "mod.py")
-    assert pending == set()
+    assert plan.pending == ()
+    assert plan.kept == 1
     assert cached_file["description"] == "cached"
 
 
@@ -840,17 +907,15 @@ def test_run_prunes_rows_for_deleted_files_and_legacy_keys(
             "INSERT INTO cache (path, hash) VALUES (?, ?)", (key, "stale")
         )
     connection.commit()
-    app = RepoMapApp()
-    app.args = argparse.Namespace(
-        repository_path=str(tmp_path), yes=True, model="test-model", concurrency=3
-    )
-    app.cache_conn = connection
 
-    asyncio.run(app._process_repository())
+    status = _run_against(monkeypatch, tmp_path, ANALYZING_MODEL)
+    app = RepoMapApp()
+    app.cache_conn = connection
     keys = _cache_keys(connection)
     pending = _pending_names(app, tmp_path)
     connection.close()
 
+    assert status == 0
     assert keys == {"kept.py"}
     assert pending == set()
 
@@ -868,16 +933,12 @@ def test_two_legacy_rows_for_one_file_upgrade_without_a_unique_violation(
             (f"{prefix}/mod.py", "legacy"),
         )
     connection.commit()
-    app = RepoMapApp()
-    app.args = argparse.Namespace(
-        repository_path=str(tmp_path), yes=True, model="test-model", concurrency=3
-    )
-    app.cache_conn = connection
 
-    asyncio.run(app._process_repository())
+    status = _run_against(monkeypatch, tmp_path, ANALYZING_MODEL)
     keys = _cache_keys(connection)
     connection.close()
 
+    assert status == 0
     assert keys == {"mod.py"}
 
 
@@ -949,16 +1010,16 @@ def test_a_model_change_reanalyzes_and_replaces_the_cached_row(
     tmp_path, monkeypatch
 ) -> None:
     """The row is superseded in place, not duplicated and not pruned -- issue #13."""
-    requested = _recording_successful_analysis(monkeypatch)
+    requested = _stub_successful_analysis(monkeypatch)
     (tmp_path / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
 
-    _run_against(tmp_path, "vendor/model-a")
+    _run_against(monkeypatch, tmp_path, "vendor/model-a")
     first_run = list(requested)
     requested.clear()
-    _run_against(tmp_path, "vendor/model-a")
+    _run_against(monkeypatch, tmp_path, "vendor/model-a")
     repeat_run = list(requested)
     requested.clear()
-    _run_against(tmp_path, "vendor/model-b")
+    _run_against(monkeypatch, tmp_path, "vendor/model-b")
     changed_run = list(requested)
 
     assert first_run == ["vendor/model-a"]
@@ -973,15 +1034,15 @@ def test_a_contract_revision_bump_reanalyzes_and_restamps_the_cached_row(
     tmp_path, monkeypatch
 ) -> None:
     """The same model under a new contract revision is a miss -- issue #13."""
-    requested = _recording_successful_analysis(monkeypatch)
+    requested = _stub_successful_analysis(monkeypatch)
     (tmp_path / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
-    _run_against(tmp_path, "vendor/model-a")
+    _run_against(monkeypatch, tmp_path, "vendor/model-a")
     requested.clear()
 
     bumped = ANALYSIS_CONTRACT_VERSION + 1
     monkeypatch.setattr(llm_module, "ANALYSIS_CONTRACT_VERSION", bumped)
     monkeypatch.setattr(cli_module, "ANALYSIS_CONTRACT_VERSION", bumped)
-    _run_against(tmp_path, "vendor/model-a")
+    _run_against(monkeypatch, tmp_path, "vendor/model-a")
 
     assert requested == ["vendor/model-a"]
     assert _cache_rows(tmp_path) == [("mod.py", "vendor/model-a", bumped, "A module.")]
@@ -991,17 +1052,17 @@ def test_a_cache_without_identity_columns_upgrades_and_reanalyzes_once(
     tmp_path, monkeypatch
 ) -> None:
     """A pre-upgrade database loads, reads as a miss, then settles -- issue #13."""
-    requested = _recording_successful_analysis(monkeypatch)
+    requested = _stub_successful_analysis(monkeypatch)
     source = tmp_path / "mod.py"
     source.write_text("VALUE = 1\n", encoding="utf-8")
     snapshot = load_source_snapshot(str(source), "Python")
     assert snapshot is not None
     _seed_pre_identity_cache(tmp_path, "mod.py", snapshot.sha256)
 
-    _run_against(tmp_path, "vendor/model-a")
+    _run_against(monkeypatch, tmp_path, "vendor/model-a")
     upgrade_run = list(requested)
     requested.clear()
-    _run_against(tmp_path, "vendor/model-a")
+    _run_against(monkeypatch, tmp_path, "vendor/model-a")
 
     assert upgrade_run == ["vendor/model-a"]
     assert requested == []
@@ -1020,18 +1081,17 @@ def test_a_failed_reanalysis_writes_no_row_and_leaves_the_stale_one_in_place(
     app.cache_conn = connection
     _cache_every_scanned_file(app, tmp_path, model="vendor/model-a")
 
-    async def failed_analysis(messages, model, session_id):
-        return {"error": {"code": 500, "message": "failed"}}
+    async def failed_analysis(messages, model, session_id, response_format):
+        return {"error": {"code": 422, "message": "failed"}}
 
     monkeypatch.setattr(llm_module, "rate_limited_api_call", failed_analysis)
-    app.args = argparse.Namespace(
-        repository_path=str(tmp_path), yes=True, model="vendor/model-b", concurrency=3
-    )
+    _stub_response_format(monkeypatch)
 
-    asyncio.run(app._process_repository())
+    status = _run_against(monkeypatch, tmp_path, "vendor/model-b")
     pending = _pending_names(app, tmp_path, model="vendor/model-b")
     connection.close()
 
+    assert status == 1
     assert pending == {"mod.py"}
     assert _cache_rows(tmp_path) == [
         ("mod.py", "vendor/model-a", ANALYSIS_CONTRACT_VERSION, "cached")
@@ -1078,3 +1138,488 @@ def test_update_cache_for_file_refuses_a_file_with_no_analysis_identity(
     connection.close()
 
     assert remaining == 0
+
+
+def test_console_script_exits_130_on_ctrl_c(monkeypatch, capsys) -> None:
+    async def interrupted(self):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(RepoMapApp, "run", interrupted)
+
+    assert _console_exit_status() == 130
+    assert "interrupted" in capsys.readouterr().out
+
+
+def test_console_script_exits_1_on_an_unexpected_error(monkeypatch, capsys) -> None:
+    async def crashed(self):
+        raise RuntimeError("unforeseen")
+
+    monkeypatch.setattr(RepoMapApp, "run", crashed)
+
+    assert _console_exit_status() == 1
+    assert "unforeseen" in capsys.readouterr().out
+
+
+def test_a_successful_run_writes_the_report_and_says_so(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    _stub_successful_analysis(monkeypatch)
+    (tmp_path / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    status = _run_app(monkeypatch, tmp_path, "-y", "--model", ANALYZING_MODEL)
+
+    output = capsys.readouterr().out
+    report = tmp_path / f"{tmp_path.name}_repo_map.md"
+    assert status == 0
+    assert "Description: A module." in report.read_text(encoding="utf-8")
+    assert f"Your repo-map has been saved to '{report.name}'." in output
+    assert _cache_rows(tmp_path) == [
+        ("mod.py", ANALYZING_MODEL, ANALYSIS_CONTRACT_VERSION, "A module.")
+    ]
+
+
+@pytest.mark.parametrize("status", [0, 1])
+def test_console_script_exits_with_the_status_run_reports(monkeypatch, status) -> None:
+    async def finished(self):
+        return status
+
+    monkeypatch.setattr(RepoMapApp, "run", finished)
+
+    assert _console_exit_status() == status
+
+
+def test_prompt_states_this_runs_counts_after_the_scan(tmp_path, monkeypatch) -> None:
+    """A fixture with known sizes pins the whole prompt -- issue #34."""
+    _write(tmp_path / "cached.py", 100)
+    _cache_all(tmp_path)
+    _write(tmp_path / "alpha.py", 1500)
+    _write(tmp_path / "src" / "beta.py", 650)
+    requests = _record_requests(monkeypatch)
+    shown = _answers(monkeypatch, "n")
+
+    status = _run_app(monkeypatch, tmp_path, "--model", ANALYZING_MODEL)
+
+    assert status == 0
+    assert shown == [
+        "repo-map will send the full text of 2 files (2.1 KiB) to OpenRouter "
+        "(test-model), plus the repository's file and directory names and short "
+        "notes on related files. 1 file with a current cached analysis keeps it; "
+        "its source is not sent.\n"
+        "Ignore rules come from repo-map's defaults, the repository's .gitignore "
+        "files at every level, and .git/info/exclude; git's global excludes file "
+        "is not read.\n"
+        "Run with --dry-run to list the files. Proceed? [y/N]: "
+    ]
+    assert requests == []
+
+
+def test_disclosure_names_every_ignore_source_and_the_unread_global_excludes(
+    tmp_path, monkeypatch
+) -> None:
+    """The ignore-rule sentence tracks the scanner's rule set -- issue #35."""
+    _write(tmp_path / "mod.py", 10)
+    _record_requests(monkeypatch)
+    shown = _answers(monkeypatch, "n")
+
+    _run_app(monkeypatch, tmp_path)
+
+    prompt = shown[0]
+    assert "the full text of 1 file " in prompt
+    assert "OpenRouter" in prompt
+    assert ".gitignore files at every level" in prompt
+    assert ".git/info/exclude" in prompt
+    assert "global excludes file is not read" in prompt
+    assert "not applied" not in prompt
+
+
+def test_dry_run_without_a_key_lists_each_pending_file_and_contacts_nobody(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    _write(tmp_path / "src" / "b.py", 20)
+    _write(tmp_path / "a.py", 10)
+    _write(tmp_path / "src" / "a.py", 30)
+    requests = _record_requests(monkeypatch)
+    _refuse_input(monkeypatch)
+
+    status = _run_app(
+        monkeypatch, tmp_path, "--dry-run", "--model", ANALYZING_MODEL, api_key=None
+    )
+
+    assert status == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "repo-map will send the full text of 3 files (0.1 KiB) to OpenRouter "
+        "(test-model), plus the repository's file and directory names and short "
+        "notes on related files. 0 files with a current cached analysis keep it; "
+        "their source is not sent.",
+        "10\ta.py",
+        "30\tsrc/a.py",
+        "20\tsrc/b.py",
+    ]
+    assert requests == []
+
+
+def test_dry_run_counts_a_current_analysis_as_kept_and_another_model_as_pending(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    _write(tmp_path / "mod.py", 10)
+    _cache_all(tmp_path, model="vendor/model-a")
+    _record_requests(monkeypatch)
+
+    same = _run_app(
+        monkeypatch, tmp_path, "--dry-run", "--model", "vendor/model-a", api_key=None
+    )
+    same_lines = capsys.readouterr().out.splitlines()
+    other = _run_app(
+        monkeypatch, tmp_path, "--dry-run", "--model", "vendor/model-b", api_key=None
+    )
+    other_lines = capsys.readouterr().out.splitlines()
+
+    assert (same, other) == (0, 0)
+    assert same_lines == [
+        "repo-map will send the full text of 0 files (0.0 KiB) to OpenRouter "
+        "(vendor/model-a), plus the repository's file and directory names and "
+        "short notes on related files. 1 file with a current cached analysis "
+        "keeps it; its source is not sent."
+    ]
+    assert other_lines == [
+        "repo-map will send the full text of 1 file (0.0 KiB) to OpenRouter "
+        "(vendor/model-b), plus the repository's file and directory names and "
+        "short notes on related files. 0 files with a current cached analysis "
+        "keep it; their source is not sent.",
+        "10\tmod.py",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "answers", "api_key"),
+    [
+        pytest.param(("--dry-run",), (), None, id="dry-run"),
+        pytest.param((), ("",), PLACEHOLDER_API_KEY, id="declined-with-bare-enter"),
+    ],
+)
+def test_dry_run_and_a_declined_prompt_leave_the_target_byte_identical(
+    tmp_path, monkeypatch, arguments, answers, api_key
+) -> None:
+    _write(tmp_path / "mod.py", 10)
+    _write(tmp_path / "docs" / "guide.py", 20)
+    requests = _record_requests(monkeypatch)
+    _answers(monkeypatch, *answers)
+    before = _tree(tmp_path)
+
+    status = _run_app(monkeypatch, tmp_path, *arguments, api_key=api_key)
+
+    assert status == 0
+    assert _tree(tmp_path) == before
+    assert requests == []
+
+
+def test_dry_run_reads_a_pre_identity_cache_unmigrated_in_a_read_only_target(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    repository = tmp_path / "repo"
+    source = repository / "mod.py"
+    _write(source, 10)
+    source_snapshot = load_source_snapshot(str(source), "Python")
+    assert source_snapshot is not None
+    _seed_pre_identity_cache(repository, "mod.py", source_snapshot.sha256)
+    _record_requests(monkeypatch)
+    before = _tree(repository)
+    repository.chmod(0o555)
+
+    try:
+        status = _run_app(
+            monkeypatch,
+            repository,
+            "--dry-run",
+            "--model",
+            ANALYZING_MODEL,
+            api_key=None,
+        )
+    finally:
+        repository.chmod(0o755)
+
+    assert status == 0
+    assert capsys.readouterr().out.splitlines()[1:] == ["10\tmod.py"]
+    assert _tree(repository) == before
+
+
+def test_dry_run_wins_over_yes_and_never_prompts(tmp_path, monkeypatch, capsys) -> None:
+    _write(tmp_path / "mod.py", 10)
+    requests = _record_requests(monkeypatch)
+    _refuse_input(monkeypatch)
+
+    status = _run_app(monkeypatch, tmp_path, "--dry-run", "-y", api_key=None)
+
+    assert status == 0
+    assert capsys.readouterr().out.splitlines()[1:] == ["10\tmod.py"]
+    assert requests == []
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["mod.py"]
+
+
+def test_a_file_created_while_the_prompt_waits_is_not_sent(
+    tmp_path, monkeypatch
+) -> None:
+    """Every file sent was counted, and nothing is sent before consent -- issue #34."""
+    _write(tmp_path / "a.py", 10)
+    _write(tmp_path / "b.py", 10)
+    requests = _record_requests(monkeypatch)
+    prompts: list[str] = []
+    before_consent: list[str] = []
+
+    def answer(prompt: str) -> str:
+        prompts.append(prompt)
+        before_consent.extend(requests)
+        _write(tmp_path / "late.py", 10)
+        return "y"
+
+    monkeypatch.setattr("builtins.input", answer)
+
+    status = _run_app(monkeypatch, tmp_path, "--model", ANALYZING_MODEL)
+
+    assert status == 0
+    assert "the full text of 2 files " in prompts[0]
+    assert before_consent == []
+    assert sorted(requests) == ["a.py", "b.py", "response_format"]
+
+
+@pytest.mark.parametrize("contents", ["empty", "all-cached"])
+def test_with_nothing_to_send_the_prompt_is_skipped_and_the_report_written(
+    tmp_path, monkeypatch, contents
+) -> None:
+    if contents == "all-cached":
+        _write(tmp_path / "mod.py", 10)
+        _cache_all(tmp_path)
+    requests = _record_requests(monkeypatch)
+    _refuse_input(monkeypatch)
+
+    status = _run_app(monkeypatch, tmp_path, "--model", ANALYZING_MODEL)
+
+    assert status == 0
+    assert _report(tmp_path).is_file()
+    assert requests == []
+
+
+def test_yes_logs_the_summary_and_sends_what_the_prompt_run_sends(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    prompted = tmp_path / "prompted"
+    unattended = tmp_path / "unattended"
+    for repository in (prompted, unattended):
+        _write(repository / "a.py", 10)
+        _write(repository / "src" / "b.py", 20)
+    requests = _record_requests(monkeypatch)
+    shown = _answers(monkeypatch, "y")
+    summary = (
+        "repo-map will send the full text of 2 files (0.0 KiB) to OpenRouter "
+        "(test-model), plus the repository's file and directory names and short "
+        "notes on related files. 0 files with a current cached analysis keep it; "
+        "their source is not sent."
+    )
+
+    prompted_status = _run_app(monkeypatch, prompted, "--model", ANALYZING_MODEL)
+    prompted_requests = sorted(requests)
+    requests.clear()
+    capsys.readouterr()
+    unattended_status = _run_app(
+        monkeypatch, unattended, "-y", "--model", ANALYZING_MODEL
+    )
+    output = capsys.readouterr().out
+
+    assert (prompted_status, unattended_status) == (0, 0)
+    assert shown[0].startswith(f"{summary}\n")
+    assert f" - INFO - {summary}" in output
+    assert "--dry-run" not in output
+    assert prompted_requests == ["a.py", "response_format", "src/b.py"]
+    assert sorted(requests) == prompted_requests
+
+
+def test_an_unwritable_report_path_logs_one_error_and_exits_1(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    _write(tmp_path / "mod.py", 10)
+    _record_requests(monkeypatch)
+    _report(tmp_path).mkdir()
+
+    status = _run_app(monkeypatch, tmp_path, "-y", "--model", ANALYZING_MODEL)
+
+    output = capsys.readouterr().out
+    errors = [line for line in output.splitlines() if " - ERROR - " in line]
+    assert status == 1
+    assert len(errors) == 1
+    assert _report(tmp_path).name in errors[0]
+    assert "has been saved" not in output
+
+
+@pytest.mark.parametrize(
+    ("failing", "last_line"),
+    [
+        ({"b.py"}, "1 file was not analyzed; rerun repo-map to retry it."),
+        ({"b.py", "c.py"}, "2 files were not analyzed; rerun repo-map to retry them."),
+    ],
+)
+def test_a_partial_run_writes_the_report_then_says_what_a_rerun_retries(
+    tmp_path, monkeypatch, capsys, failing, last_line
+) -> None:
+    for name in ("a.py", "b.py", "c.py"):
+        _write(tmp_path / name, 10)
+    _stub_response_format(monkeypatch)
+
+    async def analysis(messages, model, session_id, response_format):
+        target = TARGET_FILE.search(messages[1]["content"])
+        assert target is not None
+        content = "not json" if target.group(1) in failing else WELL_FORMED_ANALYSIS
+        return {"choices": [{"message": {"content": json.dumps(content)}}]}
+
+    monkeypatch.setattr(llm_module, "rate_limited_api_call", analysis)
+
+    status = _run_app(monkeypatch, tmp_path, "-y", "--model", ANALYZING_MODEL)
+
+    output = capsys.readouterr().out
+    assert status == 1
+    assert _report(tmp_path).is_file()
+    assert "has been saved" in output
+    assert output.splitlines()[-1].endswith(last_line)
+    assert {row[0] for row in _cache_rows(tmp_path)} == {"a.py", "b.py", "c.py"} - (
+        failing
+    )
+
+
+def test_a_fatal_openrouter_error_ends_the_run_without_a_tree_or_report(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """The issue's reproduction with the 401 stubbed: one line, no report -- issue #33."""
+    _write(tmp_path / "a.py", 10)
+    _write(tmp_path / "b.py", 10)
+    _stub_analysis_except(
+        monkeypatch,
+        {
+            "a.py": FatalOpenRouterError(401, "User not found."),
+            "b.py": FatalOpenRouterError(401, "User not found."),
+        },
+    )
+
+    status = _run_app(monkeypatch, tmp_path, "-y", "--model", ANALYZING_MODEL)
+
+    output = capsys.readouterr().out
+    assert status == 1
+    assert output.count("User not found.") == 1
+    assert "Updated Repository Map" not in output
+    assert "has been saved" not in output
+    assert not _report(tmp_path).exists()
+
+
+def test_analyses_finished_before_a_fatal_error_stay_cached(
+    tmp_path, monkeypatch
+) -> None:
+    for name in ("a.py", "b.py", "z.py"):
+        _write(tmp_path / name, 10)
+    _record_requests(monkeypatch)
+
+    async def analysis(structure, file_data, model, response_format):
+        if file_data["name"] == "z.py":
+            # Yield until the peers have finished and been recorded.
+            for _ in range(20):
+                await asyncio.sleep(0)
+            raise FatalOpenRouterError(402, "Insufficient credits.")
+        return await llm_module.get_llm_descriptions(
+            structure, file_data, model=model, response_format=response_format
+        )
+
+    monkeypatch.setattr(cli_module, "get_llm_descriptions", analysis)
+
+    status = _run_app(monkeypatch, tmp_path, "-y", "--model", ANALYZING_MODEL)
+
+    assert status == 1
+    assert [row[0] for row in _cache_rows(tmp_path)] == ["a.py", "b.py"]
+    assert not _report(tmp_path).exists()
+
+
+def test_a_fatal_error_cancels_the_analyses_still_in_flight(monkeypatch) -> None:
+    """The first task's fatal error leaves no task running or pending behind it."""
+    structure = [
+        {"path": f"/tmp/{name}.py", "name": f"{name}.py", "type": "file"}
+        for name in ("first", "slow-1", "slow-2")
+    ]
+    cancelled: list[str] = []
+    finished: list[str] = []
+
+    async def fake_description(received_structure, file_data, model, response_format):
+        if file_data["name"] == "first.py":
+            raise FatalOpenRouterError(401, "User not found.")
+        try:
+            for _ in range(50):
+                await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            cancelled.append(file_data["name"])
+            raise
+        finished.append(file_data["name"])
+        return AnalysisOutcome.SUCCESS
+
+    app = RepoMapApp()
+    monkeypatch.setattr(app, "_update_cache_for_file", lambda file_data: None)
+    monkeypatch.setattr(cli_module, "get_llm_descriptions", fake_description)
+    monkeypatch.setattr(cli_module, "tqdm", _Progress())
+    _stub_response_format(monkeypatch)
+
+    async def scenario() -> set[asyncio.Task]:
+        with pytest.raises(FatalOpenRouterError):
+            await app._enhance_summary_with_llm(structure, structure, "test-model")
+        return asyncio.all_tasks() - {asyncio.current_task()}
+
+    assert asyncio.run(scenario()) == set()
+    assert sorted(cancelled) == ["slow-1.py", "slow-2.py"]
+    assert finished == []
+
+
+def test_an_unexpected_exception_fails_only_its_file_and_the_run(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    for name in ("a.py", "b.py", "c.py"):
+        _write(tmp_path / name, 10)
+    _stub_analysis_except(monkeypatch, {"b.py": TypeError("bad payload")})
+
+    status = _run_app(monkeypatch, tmp_path, "-y", "--model", ANALYZING_MODEL)
+
+    output = capsys.readouterr().out
+    assert status == 1
+    assert _report(tmp_path).is_file()
+    assert [row[0] for row in _cache_rows(tmp_path)] == ["a.py", "c.py"]
+    assert output.splitlines()[-1].endswith(
+        "1 file was not analyzed; rerun repo-map to retry it."
+    )
+
+
+def test_console_script_exits_1_when_the_report_cannot_be_written(tmp_path) -> None:
+    """Nothing to send, so the run reaches the write without a request."""
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    (repository / "repo_repo_map.md").mkdir()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    result = _run_cli(
+        [str(repository), "-y"],
+        cwd=scratch,
+        env={"OPENROUTER_API_KEY": PLACEHOLDER_API_KEY},
+    )
+
+    _assert_single_line_failure(result, expected="repo_repo_map.md")
+    assert "has been saved" not in result.stdout + result.stderr
+
+
+def test_closed_stdin_at_the_prompt_cancels_and_exits_0(tmp_path) -> None:
+    """Regression: end of file at the prompt is a cancellation -- issue #23."""
+    repository = tmp_path / "repo"
+    _write(repository / "mod.py", 10)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    result = _run_cli(
+        [str(repository)],
+        cwd=scratch,
+        env={"OPENROUTER_API_KEY": PLACEHOLDER_API_KEY},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Operation cancelled." in result.stdout
+    assert sorted(path.name for path in repository.iterdir()) == ["mod.py"]
